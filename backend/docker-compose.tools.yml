@@ -1,0 +1,101 @@
+services:
+  nmap:
+    build: { context: ./tools/nmap }
+    image: nmap:latest
+
+  masscan:
+    build: { context: ./tools/masscan }
+    image: masscan:latest
+
+  nikto:
+    build: { context: ./tools/nikto }
+    image: nikto:latest
+
+  sqlmap:
+    build: { context: ./tools/sqlmap }
+    image: sqlmap:latest
+
+  ffuf:
+    build: { context: ./tools/ffuf }
+    image: ffuf:latest
+
+  gobuster:
+    build: { context: ./tools/gobuster }
+    image: gobuster:latest
+
+  john:
+    build: { context: ./tools/john }
+    image: john:latest
+
+  hydra:
+    build: { context: ./tools/hydra }
+    image: hydra:latest
+
+  curl:
+    build: { context: ./tools/curl }
+    image: curl:latest
+
+  tcpdump:
+    build: { context: ./tools/tcpdump }
+    image: tcpdump:latest
+
+  nuclei:
+    build: { context: ./tools/nuclei }
+    image: nuclei:latest
+
+  hashcat:
+    build: { context: ./tools/hashcat }
+    image: hashcat:latest
+
+  gitleaks:
+    build: { context: ./tools/gitleaks }
+    image: gitleaks:latest
+
+  theharvester:
+    build: { context: ./tools/theharvester }
+    image: theharvester:latest
+
+  sublist3r:
+    build: { context: ./tools/sublist3r }
+    image: sublist3r:latest
+
+  testssl:
+    build: { context: ./tools/testssl }
+    image: testssl:latest
+
+  wapiti:
+    build: { context: ./tools/wapiti }
+    image: wapiti:latest
+
+  wpscan:
+    build: { context: ./tools/wpscan }
+    image: wpscan:latest
+
+  cewl:
+    build: { context: ./tools/cewl }
+    image: cewl:latest
+
+  trivy:
+    build: { context: ./tools/trivy }
+    image: trivy:latest
+
+  amass:
+    build: { context: ./tools/amass }
+    image: amass:latest
+
+  commix:
+    build: { context: ./tools/commix }
+    image: commix:latest
+
+  searchsploit:
+    build: { context: ./tools/searchsploit }
+    image: searchsploit:latest
+
+  subdominator:
+    build: { context: ./tools/subdominator }
+    image: subdominator:latest
+
+  httpx:
+    build: { context: ./tools/httpx }
+    image: httpx:latest
+

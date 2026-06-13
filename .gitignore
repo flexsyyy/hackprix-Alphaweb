@@ -27,8 +27,8 @@ Thumbs.db
 # Binaries (compiled executables and DLLs)
 **/binaries/
 
-# Backend
-backend/
+# Models
+models/
 
 # Database & Cache
 *.db
