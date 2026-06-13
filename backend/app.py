@@ -675,6 +675,9 @@ class ChatRequest(BaseModel):
     tools: Optional[List[str]] = None
     # Optional client-supplied run id, so the client can cancel mid-run.
     run_id: Optional[str] = None
+    # Optional per-tool arg overrides — key: tool name, value: arg string.
+    # When present, overrides the default args for that tool.
+    tool_args: Optional[Dict[str, str]] = None
 
 
 class ChatResponse(BaseModel):
@@ -684,6 +687,8 @@ class ChatResponse(BaseModel):
     error: Optional[str] = None
     run_id: Optional[str] = None
     report_url: Optional[str] = None
+    next_tool: Optional[str] = None
+    suggestion: Optional[str] = None
 
 
 class CancelRequest(BaseModel):
@@ -719,18 +724,29 @@ TOOL_DEFAULT_ARGS: Dict[str, str] = {
 }
 
 
-def _resolve_chat_invocation(tool_name: str, target: str) -> tuple[str, str]:
+def _resolve_chat_invocation(
+    tool_name: str,
+    target: str,
+    tool_args: Optional[Dict[str, str]] = None,
+) -> tuple[str, str]:
     """Return (args, run_target) for a /chat tool invocation.
 
-    The target is normalised per-tool: host-only tools (nmap, masscan,
-    subdomain tools) get a bare hostname; URL tools get an http(s):// URL.
+    tool_args overrides the default args when provided for this tool.
+    The target is normalised per-tool: host-only tools get a bare hostname;
+    URL tools get an http(s):// URL.
     """
+    run_target = _normalize_target(tool_name, target)
+
+    # Client-supplied arg override takes priority
+    if tool_args and tool_name in tool_args:
+        return tool_args[tool_name], run_target
+
     if tool_name == "ffuf":
         url = (_ensure_url(target)).rstrip("/")
-        return f"-w /wordlists/common.txt -u {url}/FUZZ", _normalize_target("ffuf", target)
+        return f"-w /wordlists/common.txt -u {url}/FUZZ", run_target
 
     args = TOOL_DEFAULT_ARGS.get(tool_name, "")
-    return args, _normalize_target(tool_name, target)
+    return args, run_target
 
 
 def _resolve_tools(req: "ChatRequest") -> List[str]:
@@ -738,13 +754,15 @@ def _resolve_tools(req: "ChatRequest") -> List[str]:
     if req.tools:
         valid = [t for t in req.tools if t in SUPPORTED_TOOLS]
         if valid:
-            # de-dupe, preserve order
+            # de-dupe, preserve order, cap at 4
             seen: set = set()
             out: List[str] = []
             for t in valid:
                 if t not in seen:
                     seen.add(t)
                     out.append(t)
+                    if len(out) == 4:
+                        break
             return out
     return _detect_all_tools(req.prompt)
 
@@ -773,7 +791,7 @@ async def chat(req: ChatRequest) -> Any:
         input_err = precheck_tool_input(tool_name, {})
         if input_err:
             return tool_name, "", input_err, -1, 0.0
-        args, run_target = _resolve_chat_invocation(tool_name, target)
+        args, run_target = _resolve_chat_invocation(tool_name, target, req.tool_args)
         try:
             result = await run_tool(
                 tool_name=tool_name, args=args, target=run_target,
@@ -803,14 +821,22 @@ async def chat(req: ChatRequest) -> Any:
             combined_raw += f"\n=== {tool_name.upper()} ===\n{raw}\n"
 
     baron = get_baron(settings)
-    llm_analysis = ""
+    interpret_result: Dict[str, Any] = {}
     if baron.is_loaded and combined_raw.strip():
         try:
-            llm_analysis = await asyncio.to_thread(
+            interpret_result = await asyncio.to_thread(
                 baron.interpret_output, ", ".join(tools_used), combined_raw[:60000], target,
             )
         except Exception as llm_err:
             logger.warning(f"interpret_output failed: {llm_err}")
+
+    summary = interpret_result.get("summary", "")
+    suggestion = interpret_result.get("suggestion", "")
+    next_tool = interpret_result.get("next_tool")
+
+    llm_analysis = summary
+    if suggestion:
+        llm_analysis = f"{llm_analysis}\n\nNext step: {suggestion}" if llm_analysis else suggestion
 
     if not llm_analysis:
         lines = combined_raw.count('\n') + 1
@@ -833,6 +859,8 @@ async def chat(req: ChatRequest) -> Any:
         raw_output=combined_raw.strip(),
         run_id=run_id,
         report_url=f"/report/{run_id}",
+        next_tool=next_tool,
+        suggestion=suggestion,
     )
 
 
@@ -902,7 +930,7 @@ async def chat_stream(req: ChatRequest):
                 yield f'data: {json.dumps({"type": "tool_done", "tool": tool_name, "exit_code": -1})}\n\n'
                 continue
 
-            args, run_target = _resolve_chat_invocation(tool_name, target)
+            args, run_target = _resolve_chat_invocation(tool_name, target, req.tool_args)
             try:
                 # Run the tool and stream its output line-by-line as it
                 # appears — the consumer sees progress in real time.
@@ -956,15 +984,12 @@ async def chat_stream(req: ChatRequest):
                 break
 
         # LLM analysis after all tools finish.
-        # Tell the client we've moved past tool execution so the UI can
-        # stop showing per-tool progress, then bound the LLM call so a
-        # slow model can't leave the chat buffering indefinitely.
         baron = get_baron(settings)
-        llm_analysis = ""
+        interpret_result: Dict[str, Any] = {}
         if baron.is_loaded and combined_raw.strip():
             yield f'data: {json.dumps({"type": "analyzing"})}\n\n'
             try:
-                llm_analysis = await asyncio.wait_for(
+                interpret_result = await asyncio.wait_for(
                     asyncio.to_thread(
                         baron.interpret_output,
                         ", ".join(tools_used), combined_raw[:60000], target,
@@ -976,6 +1001,14 @@ async def chat_stream(req: ChatRequest):
             except Exception as llm_err:
                 logger.warning(f"interpret_output failed: {llm_err}")
 
+        summary = interpret_result.get("summary", "")
+        suggestion = interpret_result.get("suggestion", "")
+        next_tool = interpret_result.get("next_tool")
+
+        llm_analysis = summary
+        if suggestion:
+            llm_analysis = f"{llm_analysis}\n\nNext step: {suggestion}" if llm_analysis else suggestion
+
         if not llm_analysis:
             lines = combined_raw.count('\n') + 1
             ran = ", ".join(t.upper() for t in tools_used) or "no tools"
@@ -986,7 +1019,7 @@ async def chat_stream(req: ChatRequest):
         if cancelled:
             llm_analysis = "[Scan cancelled by user]\n" + llm_analysis
 
-        yield f'data: {json.dumps({"type": "analysis", "content": llm_analysis, "tool_used": ", ".join(tools_used)})}\n\n'
+        yield f'data: {json.dumps({"type": "analysis", "content": llm_analysis, "tool_used": ", ".join(tools_used), "next_tool": next_tool, "suggestion": suggestion})}\n\n'
 
         # Extract vulnerability alerts from the collected output
         alerts = extract_alerts(tool_results)
@@ -1240,7 +1273,7 @@ def _detect_all_tools(request_text: str) -> List[str]:
             found.append(tool)
             seen.add(tool)
     if found:
-        return found
+        return found[:4]  # max 4 simultaneous tools
 
     # 3. Nothing recognised — default to a port scan.
     return ["nmap"]

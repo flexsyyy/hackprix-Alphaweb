@@ -426,6 +426,53 @@
 }
 .ac-report__btn--dl:hover { background: #ffdf3a; }
 
+/* ── Next tool suggestion ────────────────────────────── */
+.ac-next-tool {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: rgba(0,229,255,0.04);
+  border: 1px solid rgba(0,229,255,0.18);
+  border-radius: 6px;
+}
+
+.ac-next-tool__label {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-dim);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ac-next-tool__chip {
+  background: rgba(0,229,255,0.1);
+  border: 1px solid rgba(0,229,255,0.4);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--cyan);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.ac-next-tool__chip:hover {
+  background: rgba(0,229,255,0.18);
+  border-color: var(--cyan);
+}
+
+.ac-next-tool__hint {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-dim);
+  flex: 1;
+  min-width: 0;
+}
+
 /* ── Tool picker ─────────────────────────────────────── */
 .ac-tools-section {
   background: var(--bg-tertiary);

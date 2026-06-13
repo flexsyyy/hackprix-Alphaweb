@@ -23,7 +23,13 @@ function classifyLine(line, tool) {
   return { ...base, type: 'info', icon: '▶', msg: l }
 }
 
-export default function AgentChat({ onScanOutput, onProgress, onAlerts }) {
+export default function AgentChat({
+  onScanOutput,
+  onProgress,
+  onAlerts,
+  onToolStart,        // (toolName: string) => void — fires when a tool starts
+  toolCommandOverrides, // {[tool]: args} — per-tool arg overrides from SideBar
+}) {
   const [messages,    setMessages]    = useState([])
   const [input,       setInput]       = useState('')
   const [domain,      setDomain]      = useState('')
@@ -71,6 +77,15 @@ export default function AgentChat({ onScanOutput, onProgress, onAlerts }) {
     })
   }
 
+  function addNextTool(toolName) {
+    setSelectedTools(prev => {
+      const next = new Set(prev)
+      next.add(toolName)
+      return next
+    })
+    setShowPicker(true)
+  }
+
   async function stop() {
     const rid = runIdRef.current
     if (!rid) return
@@ -115,6 +130,11 @@ export default function AgentChat({ onScanOutput, onProgress, onAlerts }) {
     const controller = new AbortController()
     abortRef.current = controller
 
+    // Build per-tool arg overrides from SideBar selections
+    const tool_args = toolCommandOverrides && Object.keys(toolCommandOverrides).length > 0
+      ? toolCommandOverrides
+      : undefined
+
     let pgDone  = 0
     let pgTotal = 0
 
@@ -122,7 +142,7 @@ export default function AgentChat({ onScanOutput, onProgress, onAlerts }) {
       const res = await fetch('/api/chat/stream', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ prompt: text, domain: domain.trim(), tools, run_id: runId }),
+        body:    JSON.stringify({ prompt: text, domain: domain.trim(), tools, run_id: runId, tool_args }),
         signal:  controller.signal,
       })
 
@@ -164,6 +184,7 @@ export default function AgentChat({ onScanOutput, onProgress, onAlerts }) {
 
           if (evt.type === 'tool_start') {
             setModelStatus(`Running ${evt.tool}…`)
+            onToolStart?.(evt.tool)
             onScanOutput?.([{ type: 'cmd', icon: '$', tool: evt.tool, msg: `${evt.tool} ${domain.trim()}`, ts: ts() }])
           }
 
@@ -194,10 +215,14 @@ export default function AgentChat({ onScanOutput, onProgress, onAlerts }) {
           }
 
           if (evt.type === 'analysis') {
-            setModelStatus('Analyzing…')
+            setModelStatus('Idle')
             setMessages(m => [...m, {
               id: Date.now() + 1, role: 'ai',
-              content: evt.content, tool: evt.tool_used || '', ts: ts(),
+              content: evt.content,
+              tool: evt.tool_used || '',
+              next_tool: evt.next_tool || null,
+              suggestion: evt.suggestion || '',
+              ts: ts(),
             }])
           }
 
@@ -279,6 +304,22 @@ export default function AgentChat({ onScanOutput, onProgress, onAlerts }) {
               </div>
             </div>
             <div className="ac-msg__body">{msg.content}</div>
+            {/* Next tool suggestion */}
+            {msg.next_tool && (
+              <div className="ac-next-tool">
+                <span className="ac-next-tool__label">Suggested next:</span>
+                <button
+                  className="ac-next-tool__chip"
+                  onClick={() => addNextTool(msg.next_tool)}
+                  title={msg.suggestion || `Run ${msg.next_tool} next`}
+                >
+                  + {msg.next_tool}
+                </button>
+                {msg.suggestion && (
+                  <span className="ac-next-tool__hint">{msg.suggestion}</span>
+                )}
+              </div>
+            )}
           </div>
         ))}
 
@@ -330,7 +371,7 @@ export default function AgentChat({ onScanOutput, onProgress, onAlerts }) {
           <div className="ac-tools-panel">
             <div className="ac-tools-panel__bar">
               <span className="ac-tools-panel__hint">
-                {selCount === 0 ? 'None selected — agent picks from your prompt' : `${selCount} of ${toolList.length}`}
+                {selCount === 0 ? 'None selected — agent picks from your prompt' : `${selCount} of ${toolList.length} (max 4 run simultaneously)`}
               </span>
               <button className="ac-tools-panel__clear" onClick={() => setSelectedTools(new Set())} type="button">
                 Clear

@@ -41,6 +41,16 @@ export default function App() {
   // Vulnerability alerts from the last run
   const [alerts, setAlerts] = useState([])
 
+  // Active tool (set when a tool starts running — drives SideBar command panel)
+  const [activeTool, setActiveTool] = useState(null)
+
+  // Per-tool arg overrides selected in SideBar
+  const [toolCommandOverrides, setToolCommandOverrides] = useState({})
+
+  function handleToolCommandSelect(tool, cmdId, args) {
+    setToolCommandOverrides(prev => ({ ...prev, [tool]: args }))
+  }
+
   // Toast
   const [toast, setToast] = useState(null)
 
@@ -85,6 +95,9 @@ export default function App() {
         activeFile={activeFile}
         onFileOpen={openFile}
         onToast={showToast}
+        activeTool={activeTool}
+        toolCommandOverrides={toolCommandOverrides}
+        onToolCommandSelect={handleToolCommandSelect}
       />
 
       <Editor
@@ -94,7 +107,13 @@ export default function App() {
         onCloseTab={closeTab}
       />
 
-      <AgentChat onScanOutput={addTermLogs} onProgress={setScanProgress} onAlerts={setAlerts} />
+      <AgentChat
+        onScanOutput={addTermLogs}
+        onProgress={setScanProgress}
+        onAlerts={setAlerts}
+        onToolStart={setActiveTool}
+        toolCommandOverrides={toolCommandOverrides}
+      />
 
       <Terminal
         clearKey={termClearKey}

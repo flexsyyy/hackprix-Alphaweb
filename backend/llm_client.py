@@ -47,6 +47,27 @@ AVAILABLE_TOOLS = list(TOOL_DESCRIPTIONS.keys())
 # Pre-built at module load — avoids rebuilding on every analyze() call
 _TOOLS_LIST_STR: str = "\n".join(f"- {k}: {v}" for k, v in TOOL_DESCRIPTIONS.items())
 
+# Rationale strings for each follow-up tool recommendation
+_NEXT_TOOL_RATIONALE: Dict[str, str] = {
+    "nmap":          "Run nmap for service/version detection on discovered open ports",
+    "nikto":         "Run nikto to scan detected web service for vulnerabilities",
+    "gobuster":      "Run gobuster to enumerate directories on open web port",
+    "ffuf":          "Run ffuf to fuzz discovered endpoints for hidden paths",
+    "sqlmap":        "Run sqlmap to test web forms/parameters for SQL injection",
+    "nuclei":        "Run nuclei for template-based CVE scanning on discovered service",
+    "httpx":         "Run httpx to probe and fingerprint discovered hosts/subdomains",
+    "hydra":         "Run hydra to test credentials on detected authentication endpoint",
+    "amass":         "Run amass for deeper DNS/subdomain enumeration",
+    "searchsploit":  "Run searchsploit to find known exploits for detected service versions",
+    "wapiti":        "Run wapiti for full web app vulnerability scan (XSS, SQLi, SSRF)",
+    "testssl":       "Run testssl to audit TLS/SSL configuration on detected HTTPS service",
+    "theharvester":  "Run theHarvester for OSINT email and subdomain harvesting",
+    "sublist3r":     "Run sublist3r for passive subdomain enumeration",
+    "commix":        "Run commix to test web parameters for command injection",
+    "wpscan":        "Run wpscan for WordPress-specific vulnerability and user enumeration",
+    "trivy":         "Run trivy for container/image vulnerability scanning",
+}
+
 # Use string.Template to avoid .format() conflicts with JSON braces in schema
 _SYSTEM_PROMPT_TEMPLATE = (
     "You are a cybersecurity tool selector. Respond ONLY with a JSON object — no prose, no markdown, no code fences.\n\n"
@@ -274,6 +295,52 @@ def _format_facts(facts: List[str]) -> str:
     return "\n".join(out)
 
 
+def _infer_next_tool(tool_name: str, facts: List[str], raw_output: str) -> Optional[str]:
+    """Deterministic next-tool recommendation from current tool output. No LLM needed."""
+    import re as _r
+    # Handle multi-tool names like "nmap, httpx" — use last tool run
+    t = tool_name.lower().split(",")[-1].strip()
+    raw_lower = raw_output.lower()
+
+    if "masscan" in t:
+        if _r.search(r"(discovered open port|open port \d+)", raw_lower):
+            return "nmap"
+
+    if "nmap" in t:
+        if _r.search(r"(http|https|apache|nginx|iis|tomcat|lighttpd|jetty)", raw_lower):
+            return "nikto"
+        if _r.search(r"\d+/(tcp|udp)\s+open", raw_lower):
+            return "gobuster"
+
+    if "nikto" in t:
+        if _r.search(r"(osvdb|cve-|sql|injection|xss|form|parameter)", raw_lower):
+            return "sqlmap"
+        if _r.search(r"(login|auth|signin|admin|password)", raw_lower):
+            return "hydra"
+        return "nuclei"
+
+    if t in ("gobuster", "ffuf"):
+        if _r.search(r"(status.*200|status.*301|status.*302|\(status: 200\))", raw_lower):
+            return "nuclei"
+
+    if t in ("sublist3r", "amass", "subdominator", "theharvester"):
+        return "httpx"
+
+    if "httpx" in t:
+        if _r.search(r"(200|301|302)", raw_lower):
+            return "nikto"
+
+    if "testssl" in t:
+        if _r.search(r"(vulnerable|heartbleed|breach|sweet32)", raw_lower):
+            return "nuclei"
+
+    if "wpscan" in t:
+        if _r.search(r"(username|user found|plugin|vulnerability)", raw_lower):
+            return "searchsploit"
+
+    return None
+
+
 class LLMError(Exception):
     """Typed error from BaronLLM HTTP calls."""
 
@@ -457,41 +524,52 @@ class BaronLLM:
             logger.error(f"AlphaLLM inference failed: {e}")
             return self._error_response(f"Model inference error: {str(e)}")
 
-    def interpret_output(self, tool_name: str, raw_output: str, target: str) -> str:
-        """Extract facts from tool output deterministically. Fall back to LLM only if needed."""
+    def interpret_output(self, tool_name: str, raw_output: str, target: str) -> Dict[str, Any]:
+        """Extract facts from tool output and suggest next tool.
 
+        Returns dict: {summary: str, suggestion: str, next_tool: Optional[str]}
+        Uses deterministic regex parsing first; LLM only as fallback for summary.
+        next_tool is always determined deterministically — no LLM hallucination.
+        """
         # Strip ANSI color codes from raw output first
         clean_raw = _re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', raw_output)
 
         # PRIMARY: deterministic regex parsing (per-tool)
         # Multiple tools may be in raw output (chat endpoint runs many)
         all_facts: List[str] = []
-        # Try each tool name present in output via "=== TOOLNAME ===" markers
         tool_blocks = _re.split(r'={3,}\s+(\w+)\s+={3,}', clean_raw)
         if len(tool_blocks) > 1:
-            # First element is preamble, then alternating (toolname, content)
+            # Alternating (toolname, content) pairs after preamble
             for i in range(1, len(tool_blocks) - 1, 2):
                 tname = tool_blocks[i].lower()
                 content = tool_blocks[i + 1]
                 all_facts.extend(_extract_facts_deterministic(tname, content))
         else:
-            # No markers — just parse with given tool_name
             all_facts.extend(_extract_facts_deterministic(tool_name, clean_raw))
 
-        if all_facts:
-            return _format_facts(all_facts)
+        # Always determine next_tool deterministically (no LLM, no hallucination)
+        next_tool = _infer_next_tool(tool_name, all_facts, clean_raw)
+        suggestion = _NEXT_TOOL_RATIONALE.get(next_tool, "") if next_tool else ""
 
-        # FALLBACK: LLM only if deterministic parser found nothing
+        if all_facts:
+            return {
+                "summary": _format_facts(all_facts),
+                "suggestion": suggestion,
+                "next_tool": next_tool,
+            }
+
+        # FALLBACK: LLM only for summary when deterministic parser finds nothing
         if not self._loaded:
-            return "1. No significant findings."
+            return {"summary": "1. No significant findings.", "suggestion": suggestion, "next_tool": next_tool}
 
         system = (
-            "Summarize the scan output as a numbered list of facts only. "
-            "Format: '1. fact' '2. fact'. Max 6 items. Max 12 words each. "
-            "Only state what is in the data. No speculation, no prose, no headers."
+            "Extract only concrete facts from the scan output. "
+            "Numbered list. Max 6 items. Max 12 words each. "
+            "State ONLY what is in the data. No speculation. No prose. No headers. "
+            "If nothing found, output exactly: 1. No significant findings."
         )
 
-        # Pre-filter junk lines
+        # Pre-filter junk lines before sending to LLM
         filtered: List[str] = []
         hex_re = _re.compile(r'\b[0-9a-fA-F]{16,}\b')
         for line in clean_raw.splitlines():
@@ -519,10 +597,12 @@ class BaronLLM:
                 max_tokens=_INTERPRET_MAX_TOKENS,
                 json_mode=False,
             ).strip()
-            return _clean_llm_output(raw)
+            summary = _clean_llm_output(raw)
         except Exception as e:
             logger.error(f"interpret_output failed: {e}")
-            return "1. No significant findings."
+            summary = "1. No significant findings."
+
+        return {"summary": summary, "suggestion": suggestion, "next_tool": next_tool}
 
     def analyze_code(self, code: str, language: str = "unknown", filename: Optional[str] = None) -> Dict[str, Any]:
         if not self._loaded:
