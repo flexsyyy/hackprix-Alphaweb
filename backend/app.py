@@ -317,13 +317,21 @@ async def lifespan(app: FastAPI):
     init_db()
     logger.info("Database initialized")
 
-    # Load BaronLLM
-    baron = get_baron(settings)
-    loaded = await asyncio.to_thread(baron.load)
-    if loaded:
-        logger.info("BaronLLM loaded successfully")
-    else:
-        logger.warning("BaronLLM failed to load - LLM features will be unavailable")
+    # BaronLLM (Layer 2 — summary) is NOT loaded here. It sleeps until the
+    # first tool summary is needed, then lazy-loads on demand (see
+    # baron.ensure_loaded in interpret_output). Keeps its 6.6GB GPU model out
+    # of memory while only routing/tool execution is happening.
+    logger.info("BaronLLM deferred — will lazy-load on first summary")
+
+    # Warm Gemma (Layer 1 — tool routing) so the first scan isn't cold.
+    if settings.GEMMA_ENABLED:
+        try:
+            from gemma_client import get_gemma
+            gemma = get_gemma(settings)
+            warmed = await asyncio.to_thread(gemma.warmup)
+            logger.info(f"Gemma warmup: {'ok' if warmed else 'unavailable'}")
+        except Exception as e:
+            logger.warning(f"Gemma warmup error: {e}")
 
     # Start background worker
     _worker_task = asyncio.create_task(_worker())
@@ -379,12 +387,8 @@ async def create_scan(req: ScanRequest) -> Any:
     if scan_queue.qsize() >= settings.MAX_QUEUE_DEPTH:
         raise HTTPException(status_code=503, detail="Scan queue is full, try again later")
 
-    # BaronLLM analysis
-    baron = get_baron(settings)
-    if baron.is_loaded:
-        analysis = await asyncio.to_thread(baron.analyze, req.request, req.target)
-    else:
-        analysis = _fallback_tool_selection(req.request)
+    # Tool selection — Layer 1 (Gemma) first, deterministic keyword fallback.
+    analysis = await asyncio.to_thread(_select_tool_for_scan, req.request, req.target)
 
     if not analysis.get("safety_checks_passed", False):
         raise HTTPException(status_code=400, detail={
@@ -605,12 +609,8 @@ async def validate_scan(req: ValidateRequest) -> Any:
             warnings=target_check.errors,
         )
 
-    # BaronLLM analysis
-    baron = get_baron(settings)
-    if baron.is_loaded:
-        analysis = await asyncio.to_thread(baron.analyze, req.request, req.target)
-    else:
-        analysis = _fallback_tool_selection(req.request)
+    # Tool selection preview — same path as /api/scan (Gemma → keyword).
+    analysis = await asyncio.to_thread(_select_tool_for_scan, req.request, req.target)
 
     return ValidateResponse(
         valid=analysis.get("safety_checks_passed", False) and analysis.get("tool_selected") is not None,
@@ -625,9 +625,18 @@ async def validate_scan(req: ValidateRequest) -> Any:
 async def health() -> Any:
     now = datetime.now(timezone.utc)
 
-    # Check BaronLLM
+    # BaronLLM (Layer 2) lazy-loads on first summary. Report it healthy if it
+    # is either already loaded or able to load (model + binary present).
     baron = get_baron(settings)
-    baronllm_ok = baron.is_loaded
+    baronllm_ok = baron.is_loaded or baron.can_load()
+
+    # Gemma (Layer 1) tool routing via Ollama.
+    gemma_ok = False
+    try:
+        from gemma_client import get_gemma
+        gemma_ok = (not settings.GEMMA_ENABLED) or get_gemma(settings).is_available()
+    except Exception:
+        pass
 
     # Check database
     db_ok = False
@@ -659,6 +668,7 @@ async def health() -> Any:
         timestamp=now.isoformat() + "Z",
         components={
             "baronllm": baronllm_ok,
+            "gemma": gemma_ok,
             "database": db_ok,
             "docker": docker_ok,
         },
@@ -750,21 +760,68 @@ def _resolve_chat_invocation(
 
 
 def _resolve_tools(req: "ChatRequest") -> List[str]:
-    """Pick the tools to run: explicit selection if given, else auto-detect."""
+    """Pick the tools to run, in priority order:
+
+      1. Explicit client selection (req.tools) — honoured exactly.
+      2. Gemma (Layer 1) natural-language tool routing — validated against
+         the tool registry, so a hallucinated name can never run.
+      3. Deterministic keyword detection — fallback when Gemma is
+         unavailable or returns nothing confident.
+    """
+    cap = settings.MAX_TOOLS_PER_SCAN
     if req.tools:
         valid = [t for t in req.tools if t in SUPPORTED_TOOLS]
         if valid:
-            # de-dupe, preserve order, cap at 4
+            # de-dupe, preserve order, cap at MAX_TOOLS_PER_SCAN
             seen: set = set()
             out: List[str] = []
             for t in valid:
                 if t not in seen:
                     seen.add(t)
                     out.append(t)
-                    if len(out) == 4:
+                    if len(out) == cap:
                         break
             return out
-    return _detect_all_tools(req.prompt)
+
+    # 2. Gemma natural-language routing.
+    gemma_tools = _gemma_select_tools(req.prompt, req.domain.strip())
+    if gemma_tools:
+        return gemma_tools[:cap]
+
+    # 3. Keyword fallback.
+    return _detect_all_tools(req.prompt)[:cap]
+
+
+def _gemma_select_tools(prompt: str, target: str) -> List[str]:
+    """Use Gemma to pick tools from NL. Returns [] if unavailable/low-confidence.
+
+    The returned names are guaranteed valid (GemmaClient validates against the
+    registry); we only additionally apply the confidence gate here.
+    """
+    if not settings.GEMMA_ENABLED:
+        return []
+    try:
+        from gemma_client import get_gemma
+        gemma = get_gemma(settings)
+        if not gemma.is_available():
+            return []
+        sel = gemma.select_tools(prompt, target)
+    except Exception as e:
+        logger.warning(f"Gemma selection failed: {e}")
+        return []
+
+    if not sel or not sel.get("safe", True):
+        return []
+    if sel.get("confidence", 0.0) < settings.GEMMA_CONFIDENCE_THRESHOLD:
+        logger.info(
+            f"Gemma confidence {sel.get('confidence'):.2f} below threshold "
+            f"{settings.GEMMA_CONFIDENCE_THRESHOLD} — using keyword fallback"
+        )
+        return []
+    tools = [t["tool"] for t in sel.get("tools", [])]
+    if tools:
+        logger.info(f"Gemma selected tools: {tools} (conf={sel.get('confidence'):.2f})")
+    return tools
 
 
 # Run ids that have been asked to cancel. Checked by the stream loop.
@@ -822,7 +879,9 @@ async def chat(req: ChatRequest) -> Any:
 
     baron = get_baron(settings)
     interpret_result: Dict[str, Any] = {}
-    if baron.is_loaded and combined_raw.strip():
+    # interpret_output does deterministic parsing first and lazy-loads Baron
+    # only if that finds nothing — no is_loaded gate needed.
+    if combined_raw.strip():
         try:
             interpret_result = await asyncio.to_thread(
                 baron.interpret_output, ", ".join(tools_used), combined_raw[:60000], target,
@@ -983,10 +1042,13 @@ async def chat_stream(req: ChatRequest):
                 cancelled = True
                 break
 
-        # LLM analysis after all tools finish.
+        # LLM analysis after all tools finish. interpret_output parses
+        # deterministically first and lazy-loads Baron only when needed —
+        # no is_loaded gate. Timeout is generous to absorb a cold start
+        # (first summary may start llama-server, ~30-60s).
         baron = get_baron(settings)
         interpret_result: Dict[str, Any] = {}
-        if baron.is_loaded and combined_raw.strip():
+        if combined_raw.strip():
             yield f'data: {json.dumps({"type": "analyzing"})}\n\n'
             try:
                 interpret_result = await asyncio.wait_for(
@@ -994,7 +1056,7 @@ async def chat_stream(req: ChatRequest):
                         baron.interpret_output,
                         ", ".join(tools_used), combined_raw[:60000], target,
                     ),
-                    timeout=45,
+                    timeout=120,
                 )
             except asyncio.TimeoutError:
                 logger.warning("interpret_output timed out — using plain summary")
@@ -1182,9 +1244,8 @@ KEYWORD_TOOL_MAP = {
     "crack": "john",
     "john": "john",
     "curl": "curl",
-    "http": "curl",
     "api": "curl",
-    "request": "curl",
+    "http request": "curl",
     "packet": "tcpdump",
     "capture": "tcpdump",
     "tcpdump": "tcpdump",
@@ -1203,7 +1264,11 @@ KEYWORD_TOOL_MAP = {
     "osint": "theharvester",
     "email harvest": "theharvester",
     "sublist3r": "sublist3r",
+    "subfinder": "sublist3r",
     "subdomain enum": "sublist3r",
+    "subdomain": "sublist3r",
+    "find subdomains": "sublist3r",
+    "enumerate subdomains": "sublist3r",
     "testssl": "testssl",
     "tls": "testssl",
     "ssl": "testssl",
@@ -1252,31 +1317,73 @@ def _detect_all_tools(request_text: str) -> List[str]:
     and a tool name is never inferred from an unrelated substring.
     """
     text = request_text.lower()
+    cap = settings.MAX_TOOLS_PER_SCAN
 
     # 1. Explicit tool names — exclusive. If the user names tools, honour
-    #    exactly that set and ignore capability keywords entirely.
+    #    exactly that set (capped) and ignore capability keywords entirely.
     named: List[str] = [
         tool for tool in SUPPORTED_TOOLS
         if re.search(rf"\b{re.escape(tool)}\b", text)
     ]
     if named:
-        return named
+        return named[:cap]
 
-    # 2. Capability keywords — boundary before the keyword, so plurals
-    #    ("ports", "vulnerabilities") still match but substrings do not.
+    # 2. Capability keywords — full word-boundary on BOTH sides (optional
+    #    trailing 's' for plurals). Prevents "https" pulling in the "http"
+    #    rule or "ssl" matching inside an unrelated word. Substrings never
+    #    select a tool, so detection stays faithful to the prompt.
     found: List[str] = []
     seen: set = set()
     for keyword, tool in KEYWORD_TOOL_MAP.items():
         if tool in seen:
             continue
-        if re.search(rf"\b{re.escape(keyword)}", text):
+        if re.search(rf"\b{re.escape(keyword)}s?\b", text):
             found.append(tool)
             seen.add(tool)
+            if len(found) == cap:
+                break
     if found:
-        return found[:4]  # max 4 simultaneous tools
+        return found
 
     # 3. Nothing recognised — default to a port scan.
     return ["nmap"]
+
+
+def _select_tool_for_scan(request_text: str, target: str) -> Dict[str, Any]:
+    """Pick a single tool for /api/scan. Gemma first, keyword fallback.
+
+    Returns the legacy analysis dict shape used by create_scan(). The tool
+    name is always either a registry-valid Gemma pick or a keyword match —
+    never a hallucinated name.
+    """
+    if settings.GEMMA_ENABLED:
+        try:
+            from gemma_client import get_gemma
+            gemma = get_gemma(settings)
+            if gemma.is_available():
+                sel = gemma.select_tools(request_text, target)
+                if sel and sel.get("tools"):
+                    if not sel.get("safe", True):
+                        return {
+                            "tool_selected": None, "confidence": sel.get("confidence", 0.0),
+                            "parameters": {}, "rationale": "Request flagged unsafe by router",
+                            "safety_checks_passed": False,
+                            "warnings": ["Gemma flagged request as unsafe"],
+                        }
+                    if sel.get("confidence", 0.0) >= settings.GEMMA_CONFIDENCE_THRESHOLD:
+                        first = sel["tools"][0]
+                        return {
+                            "tool_selected": first["tool"],
+                            "confidence": sel["confidence"],
+                            "parameters": first.get("parameters", {}),
+                            "rationale": first.get("rationale", f"Gemma selected {first['tool']}"),
+                            "safety_checks_passed": True,
+                            "warnings": [],
+                        }
+        except Exception as e:
+            logger.warning(f"Gemma scan selection failed: {e}")
+
+    return _fallback_tool_selection(request_text)
 
 
 def _fallback_tool_selection(request_text: str) -> Dict[str, Any]:

@@ -79,8 +79,35 @@ def _always(_findings: List[Dict], _raw: str) -> bool:
     return True
 
 
-# Tool chain definitions
+def _has_subdomains(findings: List[Dict], raw_output: str) -> bool:
+    """Check if a subdomain-enum tool produced hostnames."""
+    for f in findings:
+        if f.get("type") == "subdomain" or f.get("host"):
+            return True
+    return bool(re.search(r"\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b", raw_output, re.IGNORECASE))
+
+
+def _has_live_http(findings: List[Dict], raw_output: str) -> bool:
+    """httpx/curl found a live HTTP endpoint."""
+    for f in findings:
+        if f.get("status_code") in (200, 301, 302, 401, 403):
+            return True
+    return bool(re.search(r"\[(?:200|301|302|401|403)\]|HTTP/[\d.]+ (?:200|301|302)", raw_output))
+
+
+def _has_tls_issue(findings: List[Dict], raw_output: str) -> bool:
+    return bool(re.search(r"(vulnerable|heartbleed|breach|sweet32|poodle|weak cipher)", raw_output, re.IGNORECASE))
+
+
+def _is_wordpress(findings: List[Dict], raw_output: str) -> bool:
+    return bool(re.search(r"(wordpress|wp-content|wp-login|wp-json)", raw_output, re.IGNORECASE))
+
+
+# Tool chain definitions: source_tool -> [(condition_fn, next_tool, rationale)].
+# All next-tools are literal registry names — no model picks these, so the
+# chain can never branch to a tool that does not exist.
 TOOL_CHAINS: Dict[str, List[Tuple[Any, str, str]]] = {
+    # --- recon: ports ---
     "masscan": [
         (_has_open_ports, "nmap", "Masscan found open ports — running nmap for service detection"),
     ],
@@ -88,16 +115,50 @@ TOOL_CHAINS: Dict[str, List[Tuple[Any, str, str]]] = {
         (_has_web_service, "nikto", "Open web service detected — scanning for vulnerabilities"),
         (_has_open_ports, "gobuster", "Open ports found — enumerating directories"),
     ],
+    # --- recon: subdomains/OSINT -> probe what's alive ---
+    "sublist3r": [
+        (_has_subdomains, "httpx", "Subdomains found — probing which are live"),
+    ],
+    "amass": [
+        (_has_subdomains, "httpx", "Assets discovered — probing which are live"),
+    ],
+    "subdominator": [
+        (_has_subdomains, "httpx", "Subdomains found — probing for live hosts"),
+    ],
+    "theharvester": [
+        (_has_subdomains, "httpx", "Hosts harvested — probing which respond"),
+    ],
+    "httpx": [
+        (_has_live_http, "nikto", "Live web host found — scanning for web vulnerabilities"),
+    ],
+    # --- web enumeration ---
     "gobuster": [
         (_has_directories, "ffuf", "Directories found — fuzzing for hidden endpoints"),
-        (_has_directories, "curl", "Directories found — inspecting responses"),
         (_has_directories, "gitleaks", "Directories found — scanning for exposed secrets"),
     ],
+    "ffuf": [
+        (_has_directories, "nuclei", "Endpoints found — running template-based CVE scan"),
+    ],
     "nikto": [
+        (_is_wordpress, "wpscan", "WordPress detected — running WordPress vulnerability scan"),
         (_has_web_vulns, "sqlmap", "Web vulnerabilities found — testing for SQL injection"),
         (_has_auth_endpoints, "hydra", "Auth endpoints found — testing credentials"),
         (_has_web_vulns, "nuclei", "Vulnerabilities found — running template-based scan"),
     ],
+    # --- vuln scanning -> exploit lookup ---
+    "nuclei": [
+        (_has_web_vulns, "searchsploit", "CVEs detected — searching Exploit-DB for known exploits"),
+    ],
+    "wapiti": [
+        (_has_web_vulns, "sqlmap", "Injection points found — confirming SQL injection"),
+    ],
+    "wpscan": [
+        (_has_web_vulns, "searchsploit", "WordPress CVEs found — searching for exploits"),
+    ],
+    "testssl": [
+        (_has_tls_issue, "nuclei", "TLS weakness found — running CVE templates"),
+    ],
+    # --- cracking ---
     "john": [
         (_always, "hashcat", "John completed — running hashcat for additional cracking"),
     ],

@@ -29,7 +29,7 @@ TOOL_DESCRIPTIONS = {
     "hashcat": "advanced GPU-accelerated password hash cracking",
     "gitleaks": "git repository secret scanning and credential leak detection",
     "theharvester": "OSINT email, subdomain, host, and employee harvesting from public sources",
-    "sublist3r": "passive subdomain enumeration using search engines and DNS",
+    "sublist3r": "passive subdomain enumeration (subfinder) across many DNS sources",
     "testssl": "TLS/SSL configuration testing, cipher suite auditing, and certificate checks",
     "wapiti": "web application vulnerability scanner (SQLi, XSS, SSRF, LFI, etc.)",
     "wpscan": "WordPress vulnerability scanner — plugins, themes, users, CVEs",
@@ -230,10 +230,118 @@ def _extract_facts_deterministic(tool: str, raw: str) -> List[str]:
         if emails:
             facts.append(f"Found {len(set(emails))} email(s)")
 
+    # === cewl ===  (wordlist generator — count words, don't "interpret" them)
+    elif "cewl" in t:
+        words = []
+        for line in raw.splitlines():
+            w = line.strip()
+            # skip banner / blank / non-word lines
+            if not w or w.startswith("CeWL") or "Robin Wood" in w or w.startswith(("http", "[", "-")):
+                continue
+            if _re.fullmatch(r"[A-Za-z][A-Za-z0-9'-]*", w):
+                words.append(w)
+        if words:
+            uniq = len(set(w.lower() for w in words))
+            sample = ", ".join(words[:8])
+            facts.append(f"Generated {len(words)} words ({uniq} unique) from target")
+            facts.append(f"Sample: {sample}")
+        else:
+            facts.append("No words generated from target")
+
     # === masscan ===
     elif "masscan" in t:
         for m in _re.finditer(r'Discovered open port (\d+)/(tcp|udp) on (\S+)', raw):
             facts.append(f"Open port {m.group(1)}/{m.group(2)} on {m.group(3)}")
+
+    # === hydra ===  (credential brute-force)
+    elif "hydra" in t:
+        creds = _re.findall(r'\[\d+\]\[[^\]]+\]\s+host:\s*(\S+)\s+login:\s*(\S+)\s+password:\s*(\S+)', raw)
+        for host, login, pw in creds:
+            facts.append(f"Valid credential: {login}:{pw} on {host}")
+        if not creds:
+            m = _re.search(r'(\d+)\s+valid passwords? found', raw, _re.I)
+            if m:
+                facts.append(f"{m.group(1)} valid credential(s) found")
+            elif _re.search(r'0 valid passwords? found|could not connect', raw, _re.I):
+                facts.append("No valid credentials found")
+
+    # === hashcat ===  (hash cracking)
+    elif "hashcat" in t:
+        if _re.search(r'Status\.+:\s*Cracked', raw, _re.I) or _re.search(r':\s*\w+\s*$', raw, _re.M):
+            cracked = _re.findall(r'^([0-9a-fA-F]{16,}):(.+)$', raw, _re.M)
+            for h, plain in cracked[:5]:
+                facts.append(f"Cracked hash -> {plain.strip()}")
+            if not cracked:
+                facts.append("Hash cracked (see output)")
+        elif _re.search(r'Status\.+:\s*Exhausted', raw, _re.I):
+            facts.append("Wordlist exhausted — hash not cracked")
+        m = _re.search(r'Recovered\.+:\s*(\d+)/(\d+)', raw)
+        if m:
+            facts.append(f"Recovered {m.group(1)}/{m.group(2)} hashes")
+
+    # === john ===  (hash cracking)
+    elif t == "john" or "john the ripper" in t:
+        # "password         (user)"  cracked lines
+        cracked = _re.findall(r'^(\S+)\s+\(([^)]+)\)\s*$', raw, _re.M)
+        for pw, user in cracked[:8]:
+            if pw.lower() not in ("loaded", "using", "press"):
+                facts.append(f"Cracked: {user} -> {pw}")
+        if not cracked:
+            if "No password hashes loaded" in raw:
+                facts.append("No valid hashes loaded from file")
+            elif _re.search(r'\b0g\b|0 password hashes cracked', raw):
+                facts.append("No hashes cracked")
+        m = _re.search(r'(\d+)g\s+\d+:', raw)
+        if m and int(m.group(1)) > 0:
+            facts.append(f"{m.group(1)} hash(es) cracked")
+
+    # === trivy ===  (container/fs vuln scan)
+    elif "trivy" in t:
+        sev_counts: Dict[str, int] = {}
+        for m in _re.finditer(r'\b(CRITICAL|HIGH|MEDIUM|LOW|UNKNOWN)\b', raw):
+            sev_counts[m.group(1)] = sev_counts.get(m.group(1), 0) + 1
+        # Trivy summary line: "Total: 12 (HIGH: 4, CRITICAL: 1)"
+        m = _re.search(r'Total:\s*(\d+)\s*\(([^)]*)\)', raw)
+        if m:
+            facts.append(f"Total {m.group(1)} vulnerabilities ({m.group(2).strip()})")
+        elif sev_counts:
+            parts = ", ".join(f"{k}: {v}" for k, v in sev_counts.items())
+            facts.append(f"Vulnerabilities by severity — {parts}")
+        for m in _re.finditer(r'(CVE-\d{4}-\d+)', raw):
+            facts.append(f"CVE found: {m.group(1)}")
+            if len([f for f in facts if f.startswith("CVE found")]) >= 5:
+                break
+
+    # === commix ===  (command injection)
+    elif "commix" in t:
+        if _re.search(r"(is vulnerable|appears to be injectable|injection point)", raw, _re.I):
+            facts.append("Target appears vulnerable to command injection")
+        for m in _re.finditer(r'Parameter:\s*(\S+)', raw):
+            facts.append(f"Injectable parameter: {m.group(1)}")
+        if _re.search(r"all tested parameters.*not injectable|does not seem to be injectable", raw, _re.I):
+            facts.append("No command injection found")
+
+    # === wapiti ===  (web app vuln scanner)
+    elif "wapiti" in t:
+        for m in _re.finditer(r'(?:Found|Detected)\s+(\d+)\s+([A-Za-z ]+?)(?: vulnerabilit)', raw, _re.I):
+            facts.append(f"{m.group(1)} {m.group(2).strip()} vulnerability(ies)")
+        for vuln in ("SQL Injection", "Cross Site Scripting", "XSS", "SSRF",
+                     "Path Traversal", "Command execution", "CRLF"):
+            if _re.search(rf'\b{_re.escape(vuln)}\b', raw, _re.I):
+                facts.append(f"Found: {vuln}")
+        # de-dupe handled by _format_facts later
+
+    # === tcpdump ===  (packet capture)
+    elif "tcpdump" in t:
+        m = _re.search(r'(\d+)\s+packets? captured', raw)
+        if m:
+            facts.append(f"{m.group(1)} packets captured")
+        protos: Dict[str, int] = {}
+        for pm in _re.finditer(r'\b(TCP|UDP|ICMP|ARP|HTTP|DNS|TLS)\b', raw):
+            protos[pm.group(1)] = protos.get(pm.group(1), 0) + 1
+        if protos:
+            top = ", ".join(f"{k}: {v}" for k, v in sorted(protos.items(), key=lambda x: -x[1])[:4])
+            facts.append(f"Protocols seen — {top}")
 
     # === Generic fallback: count exit status ===
     if not facts:
@@ -324,18 +432,32 @@ def _infer_next_tool(tool_name: str, facts: List[str], raw_output: str) -> Optio
             return "nuclei"
 
     if t in ("sublist3r", "amass", "subdominator", "theharvester"):
-        return "httpx"
+        # only chain if something hostname-like actually came back
+        if _r.search(r"(?:[a-z0-9-]+\.)+[a-z]{2,}", raw_lower):
+            return "httpx"
 
     if "httpx" in t:
-        if _r.search(r"(200|301|302)", raw_lower):
+        if _r.search(r"\[(?:200|301|302|401|403)\]|(?:200|301|302)", raw_lower):
             return "nikto"
 
+    if "ffuf" in t:
+        if _r.search(r"(status.*200|status.*301|status.*302)", raw_lower):
+            return "nuclei"
+
+    if "nuclei" in t:
+        if _r.search(r"(cve-|critical|high|medium)", raw_lower):
+            return "searchsploit"
+
+    if "wapiti" in t:
+        if _r.search(r"(sql|injection|xss|vulnerab)", raw_lower):
+            return "sqlmap"
+
     if "testssl" in t:
-        if _r.search(r"(vulnerable|heartbleed|breach|sweet32)", raw_lower):
+        if _r.search(r"(vulnerable|heartbleed|breach|sweet32|poodle)", raw_lower):
             return "nuclei"
 
     if "wpscan" in t:
-        if _r.search(r"(username|user found|plugin|vulnerability)", raw_lower):
+        if _r.search(r"(username|user found|plugin|vulnerability|cve-)", raw_lower):
             return "searchsploit"
 
     return None
@@ -352,6 +474,29 @@ class BaronLLM:
         self._settings = settings
         self._loaded = False
         self._server_proc: Optional[subprocess.Popen] = None
+        self._load_lock = threading.Lock()
+
+    def ensure_loaded(self) -> bool:
+        """Lazy-load the model on first use. Thread-safe; idempotent.
+
+        BaronLLM sleeps until a summary is actually requested, then starts
+        llama-server here. Subsequent calls return immediately.
+        """
+        if self._loaded:
+            return True
+        with self._load_lock:
+            if self._loaded:
+                return True
+            return self.load()
+
+    def can_load(self) -> bool:
+        """True if the model file and llama-server binary are present.
+
+        Cheap check — does not start the server. Used by /health so a sleeping
+        (not-yet-loaded) Baron still reports healthy.
+        """
+        model_path = os.path.abspath(self._settings.BARONLLM_MODEL_PATH)
+        return os.path.isfile(model_path) and os.path.isfile(LLAMA_SERVER_EXE)
 
     def load(self) -> bool:
         model_path = os.path.abspath(self._settings.BARONLLM_MODEL_PATH)
@@ -558,8 +703,9 @@ class BaronLLM:
                 "next_tool": next_tool,
             }
 
-        # FALLBACK: LLM only for summary when deterministic parser finds nothing
-        if not self._loaded:
+        # FALLBACK: LLM only for summary when deterministic parser finds nothing.
+        # Lazy-load BaronLLM here — this is the first point a summary truly needs it.
+        if not self.ensure_loaded():
             return {"summary": "1. No significant findings.", "suggestion": suggestion, "next_tool": next_tool}
 
         system = (

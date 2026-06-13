@@ -1,8 +1,10 @@
-FROM python:3.13-slim
 
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends git ca-certificates \
-  && rm -rf /var/lib/apt/lists/* \
-  && pip install --no-cache-dir sublist3r
+FROM golang:1.24-alpine AS build
+RUN apk add --no-cache git \
+    && go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
 
-ENTRYPOINT ["sublist3r"]
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+COPY --from=build /go/bin/subfinder /usr/local/bin/subfinder
+# -d <domain> is appended by the runner; -silent keeps output to bare hostnames.
+ENTRYPOINT ["subfinder", "-silent"]

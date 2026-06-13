@@ -300,6 +300,35 @@ def _host_only(target: str) -> str:
     return t
 
 
+# Two-label public suffixes — so "x.example.co.uk" reduces to "example.co.uk",
+# not "co.uk". Extend as needed.
+_MULTI_TLDS = {
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "co.in", "co.jp", "com.au",
+    "com.br", "co.za", "com.sg", "co.kr", "com.mx", "co.nz",
+}
+
+
+def _root_domain(host: str) -> str:
+    """Reduce a hostname to its registrable root domain.
+
+    s3.hackprix.tech -> hackprix.tech ; www.foo.co.uk -> foo.co.uk
+    Subdomain-enumeration tools must run against the ROOT, otherwise they look
+    for children of a leaf (e.g. s3.hackprix.tech) and find nothing.
+    """
+    host = (host or "").strip().lower().rstrip(".")
+    # An IP address has no "root domain" — return as-is.
+    if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", host):
+        return host
+    labels = host.split(".")
+    if len(labels) <= 2:
+        return host
+    last2 = ".".join(labels[-2:])
+    last3 = ".".join(labels[-3:])
+    if last2 in _MULTI_TLDS:
+        return last3
+    return last2
+
+
 def _normalize_target(tool_name: str, target: str) -> str:
     """Coerce the target into the form the given tool expects."""
     # masscan cannot resolve hostnames — it needs a literal IP address.
@@ -310,13 +339,9 @@ def _normalize_target(tool_name: str, target: str) -> str:
             return socket.gethostbyname(host)
         except Exception:
             return host
-    if tool_name == "subdominator":
-        # subdominator enumerates *under* the given name — a "www." prefix
-        # would search www.<domain> and find nothing. Reduce to root domain.
-        host = _host_only(target)
-        if host.lower().startswith("www."):
-            host = host[4:]
-        return host
+    # Subdomain-enumeration tools must target the registrable ROOT domain.
+    if tool_name in ("sublist3r", "amass", "subdominator", "theharvester"):
+        return _root_domain(_host_only(target))
     if tool_name in _NEEDS_BARE_HOST:
         return _host_only(target)
     if tool_name in _NEEDS_URL_SCHEME:

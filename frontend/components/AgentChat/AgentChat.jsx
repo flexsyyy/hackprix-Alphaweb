@@ -69,21 +69,27 @@ export default function AgentChat({
     return ''
   }
 
+  const MAX_TOOLS = 3
+
   function toggleTool(name) {
     setSelectedTools(prev => {
       const next = new Set(prev)
-      next.has(name) ? next.delete(name) : next.add(name)
+      if (next.has(name)) {
+        next.delete(name)
+      } else {
+        if (next.size >= MAX_TOOLS) return prev  // hard cap: max 3 per scan
+        next.add(name)
+      }
       return next
     })
   }
 
+  // Suggested-next chip: run that ONE tool as a fresh scan. Does NOT mutate
+  // the persistent selection — otherwise leftover picks would silently
+  // override the next typed prompt.
   function addNextTool(toolName) {
-    setSelectedTools(prev => {
-      const next = new Set(prev)
-      next.add(toolName)
-      return next
-    })
-    setShowPicker(true)
+    if (loading) return
+    runScan(`run ${toolName}`, [toolName])
   }
 
   async function stop() {
@@ -103,6 +109,11 @@ export default function AgentChat({
   async function send() {
     const text = input.trim()
     if (!text || loading) return
+    runScan(text, [...selectedTools])
+  }
+
+  async function runScan(text, tools) {
+    if (!text || loading) return
 
     const err = validateDomain(domain)
     if (err) { setDomainError(err); return }
@@ -119,7 +130,6 @@ export default function AgentChat({
     onProgress?.({ done: 0, total: 0, active: true })
     onAlerts?.([])
 
-    const tools = [...selectedTools]
     setModelStatus(tools.length ? `Queued ${tools.length} tool(s)…` : 'Selecting tools…')
 
     onScanOutput?.([{
@@ -371,7 +381,7 @@ export default function AgentChat({
           <div className="ac-tools-panel">
             <div className="ac-tools-panel__bar">
               <span className="ac-tools-panel__hint">
-                {selCount === 0 ? 'None selected — agent picks from your prompt' : `${selCount} of ${toolList.length} (max 4 run simultaneously)`}
+                {selCount === 0 ? 'None selected — agent picks from your prompt' : `${selCount} of ${MAX_TOOLS} max selected`}
               </span>
               <button className="ac-tools-panel__clear" onClick={() => setSelectedTools(new Set())} type="button">
                 Clear
