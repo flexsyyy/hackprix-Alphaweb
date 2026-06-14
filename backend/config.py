@@ -4,6 +4,11 @@ import json
 import os
 from typing import Dict, Optional
 
+from dotenv import load_dotenv
+
+# Load backend/.env (next to this file) before settings are read.
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+
 
 def env(key: str, default: str = "") -> str:
     return os.getenv(key, default)

@@ -394,19 +394,13 @@ export default function AgentChat({
             Open Report
           </button>
           <a
-            className="ac-report__btn ac-report__btn--dl"
-            href={`/api/report/${report.runId}/download`}
-          >
-            Download HTML
-          </a>
-          <a
-            className="ac-report__btn ac-report__btn--pdf"
+            className="ac-report__btn"
             href={`/api/report/${report.runId}/pdf`}
           >
             PDF (this run)
           </a>
           <button
-            className="ac-report__btn ac-report__btn--gen"
+            className="ac-report__btn"
             onClick={generatePdf}
             type="button"
             title="Generate one combined PDF of all scan reports"
