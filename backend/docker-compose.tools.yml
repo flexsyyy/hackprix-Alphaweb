@@ -55,9 +55,9 @@ services:
     build: { context: ./tools/theharvester }
     image: theharvester:latest
 
-  sublist3r:
-    build: { context: ./tools/sublist3r }
-    image: sublist3r:latest
+  subfinder:
+    build: { context: ./tools/subfinder }
+    image: subfinder:latest
 
   testssl:
     build: { context: ./tools/testssl }

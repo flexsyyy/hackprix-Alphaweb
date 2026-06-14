@@ -81,10 +81,10 @@ const TOOL_COMMANDS = {
     { id: 'google',   label: 'Google only',      args: '-b google -d',  desc: 'Google source only' },
     { id: 'extended', label: 'Extended (500)',   args: '-b all -l 500 -d', desc: 'Extended result limit' },
   ],
-  sublist3r: [
+  subfinder: [
     { id: 'basic',    label: 'Enumerate',        args: '-d',            desc: 'Passive subdomain enum' },
-    { id: 'verbose',  label: 'Verbose',          args: '-v -d',         desc: 'Verbose mode' },
-    { id: 'engines',  label: 'Multi-engine',     args: '-e google,yahoo,bing -d', desc: 'Specific search engines' },
+    { id: 'all',      label: 'All sources',      args: '-all -d',       desc: 'Use all sources (slower)' },
+    { id: 'recursive',label: 'Recursive',        args: '-recursive -d', desc: 'Recursive subdomain enum' },
   ],
   testssl: [
     { id: 'full',     label: 'Full scan',        args: '',              desc: 'Complete TLS audit' },

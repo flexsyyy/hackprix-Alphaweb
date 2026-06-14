@@ -44,6 +44,7 @@ export default function AgentChat({
 
   // Report produced by the last completed run
   const [report, setReport] = useState(null)
+  const [resetting, setResetting] = useState(false)
 
   const endRef   = useRef(null)
   const inputRef = useRef(null)
@@ -110,6 +111,32 @@ export default function AgentChat({
     const text = input.trim()
     if (!text || loading) return
     runScan(text, [...selectedTools])
+  }
+
+  // Download a single combined PDF of every scan report on the server.
+  function generatePdf() {
+    window.open('/api/reports/pdf', '_blank', 'noopener')
+  }
+
+  // User-initiated DB reset. Wipes scan data + reports, keeps tool defs.
+  async function resetDatabase() {
+    if (resetting) return
+    if (!window.confirm('Reset the database? This permanently deletes all scans, logs and saved reports. Tool definitions are kept.')) return
+    setResetting(true)
+    try {
+      const res = await fetch('/api/database/reset', { method: 'POST' })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      const n = Object.values(data.deleted || {}).reduce((a, b) => a + b, 0)
+      setReport(null)
+      setMessages([])
+      onAlerts?.([])
+      onScanOutput?.([{ type: 'success', icon: '✓', msg: `Database reset — ${n} record(s) + ${data.reports_deleted} report(s) cleared.`, ts: ts() }])
+    } catch (e) {
+      onScanOutput?.([{ type: 'error', icon: '✗', msg: `Reset failed: ${e.message}`, ts: ts() }])
+    } finally {
+      setResetting(false)
+    }
   }
 
   async function runScan(text, tools) {
@@ -280,6 +307,15 @@ export default function AgentChat({
             <span className="ac-model-dot" />
             <span className="ac-model-name">ALPHA-LLM</span>
             <span className="ac-model-status">{modelStatus}</span>
+            <button
+              className="ac-reset-btn"
+              onClick={resetDatabase}
+              disabled={resetting || loading}
+              title="Wipe all scans & reports (keeps tool definitions)"
+              type="button"
+            >
+              {resetting ? '⟳ Resetting…' : '⟲ Reset DB'}
+            </button>
           </div>
         </div>
         <p className="ac-subtitle">AI-POWERED CYBERSECURITY AUTOMATION PLATFORM</p>
@@ -361,8 +397,22 @@ export default function AgentChat({
             className="ac-report__btn ac-report__btn--dl"
             href={`/api/report/${report.runId}/download`}
           >
-            Download
+            Download HTML
           </a>
+          <a
+            className="ac-report__btn ac-report__btn--pdf"
+            href={`/api/report/${report.runId}/pdf`}
+          >
+            PDF (this run)
+          </a>
+          <button
+            className="ac-report__btn ac-report__btn--gen"
+            onClick={generatePdf}
+            type="button"
+            title="Generate one combined PDF of all scan reports"
+          >
+            ⬇ Generate PDF (all)
+          </button>
         </div>
       )}
 

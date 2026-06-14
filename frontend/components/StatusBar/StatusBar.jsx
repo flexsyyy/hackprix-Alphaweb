@@ -4,7 +4,7 @@ import './StatusBar.css'
 const TOOLS = [
   'nmap', 'masscan', 'nikto', 'sqlmap', 'ffuf', 'gobuster',
   'john', 'hydra', 'curl', 'tcpdump', 'nuclei', 'hashcat',
-  'gitleaks', 'theharvester', 'sublist3r', 'testssl', 'wapiti',
+  'gitleaks', 'theharvester', 'subfinder', 'testssl', 'wapiti',
   'wpscan', 'cewl', 'trivy', 'amass', 'commix', 'searchsploit',
   'subdominator', 'httpx',
 ]

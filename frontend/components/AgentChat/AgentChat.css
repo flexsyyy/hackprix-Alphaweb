@@ -426,6 +426,37 @@
 }
 .ac-report__btn--dl:hover { background: #ffdf3a; }
 
+.ac-report__btn--pdf {
+  background: #f87171;
+}
+.ac-report__btn--pdf:hover { background: #fb8b8b; }
+
+.ac-report__btn--gen {
+  background: var(--green);
+}
+.ac-report__btn--gen:hover { filter: brightness(1.12); }
+
+/* ── Reset DB button (header) ────────────────────────── */
+.ac-reset-btn {
+  margin-left: 10px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #f87171;
+  background: transparent;
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  border-radius: 4px;
+  padding: 2px 7px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.ac-reset-btn:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.12);
+  color: #fca5a5;
+}
+.ac-reset-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
 /* ── Next tool suggestion ────────────────────────────── */
 .ac-next-tool {
   display: flex;

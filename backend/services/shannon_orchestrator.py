@@ -258,7 +258,7 @@ _TOOL_DEFAULT_ARGS: Dict[str, str] = {
     "nuclei":       "-u",
     "gobuster":     "dir -w /wordlists/common.txt -u",
     "amass":        "enum -passive -d",
-    "sublist3r":    "-d",
+    "subfinder":    "-d",
     "subdominator": "-d",
     "trivy":        "image",
     "theharvester": "-b all -l 100 -d",
@@ -280,7 +280,7 @@ _NEEDS_URL_SCHEME = {
 # Tools that take a bare host/domain — any scheme, path or port must be
 # stripped or the tool errors (e.g. nmap can't parse "https://x/").
 _NEEDS_BARE_HOST = {
-    "nmap", "masscan", "sublist3r", "amass", "subdominator",
+    "nmap", "masscan", "subfinder", "amass", "subdominator",
     "theharvester", "testssl", "hydra",
 }
 
@@ -340,7 +340,7 @@ def _normalize_target(tool_name: str, target: str) -> str:
         except Exception:
             return host
     # Subdomain-enumeration tools must target the registrable ROOT domain.
-    if tool_name in ("sublist3r", "amass", "subdominator", "theharvester"):
+    if tool_name in ("subfinder", "amass", "subdominator", "theharvester"):
         return _root_domain(_host_only(target))
     if tool_name in _NEEDS_BARE_HOST:
         return _host_only(target)
@@ -428,7 +428,7 @@ def parse_findings(tool_name: str, raw_output: str) -> List[Dict[str, Any]]:
         return _parse_line_findings(raw_output)
     elif tool_name == "gitleaks":
         return _parse_gitleaks(raw_output)
-    elif tool_name in ("subdominator", "sublist3r", "amass"):
+    elif tool_name in ("subdominator", "subfinder", "amass"):
         return _parse_subdomains(raw_output)
     else:
         return _parse_generic(raw_output)

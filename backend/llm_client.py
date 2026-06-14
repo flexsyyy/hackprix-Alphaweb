@@ -29,7 +29,7 @@ TOOL_DESCRIPTIONS = {
     "hashcat": "advanced GPU-accelerated password hash cracking",
     "gitleaks": "git repository secret scanning and credential leak detection",
     "theharvester": "OSINT email, subdomain, host, and employee harvesting from public sources",
-    "sublist3r": "passive subdomain enumeration (subfinder) across many DNS sources",
+    "subfinder": "passive subdomain enumeration across many DNS sources",
     "testssl": "TLS/SSL configuration testing, cipher suite auditing, and certificate checks",
     "wapiti": "web application vulnerability scanner (SQLi, XSS, SSRF, LFI, etc.)",
     "wpscan": "WordPress vulnerability scanner — plugins, themes, users, CVEs",
@@ -62,7 +62,7 @@ _NEXT_TOOL_RATIONALE: Dict[str, str] = {
     "wapiti":        "Run wapiti for full web app vulnerability scan (XSS, SQLi, SSRF)",
     "testssl":       "Run testssl to audit TLS/SSL configuration on detected HTTPS service",
     "theharvester":  "Run theHarvester for OSINT email and subdomain harvesting",
-    "sublist3r":     "Run sublist3r for passive subdomain enumeration",
+    "subfinder":     "Run subfinder for passive subdomain enumeration",
     "commix":        "Run commix to test web parameters for command injection",
     "wpscan":        "Run wpscan for WordPress-specific vulnerability and user enumeration",
     "trivy":         "Run trivy for container/image vulnerability scanning",
@@ -184,8 +184,8 @@ def _extract_facts_deterministic(tool: str, raw: str) -> List[str]:
         for m in _re.finditer(r'^([\w._-]+)\s+\[Status:\s*(\d+),', raw, _re.M):
             facts.append(f"Found {m.group(1)} (status {m.group(2)})")
 
-    # === sublist3r / amass / subdominator ===
-    elif t in ("sublist3r", "amass", "subdominator"):
+    # === subfinder / amass / subdominator ===
+    elif t in ("subfinder", "amass", "subdominator"):
         subs = set()
         for line in raw.splitlines():
             line = _re.sub(r'\x1b\[[0-9;]*m', '', line).strip()  # strip ANSI
@@ -431,7 +431,7 @@ def _infer_next_tool(tool_name: str, facts: List[str], raw_output: str) -> Optio
         if _r.search(r"(status.*200|status.*301|status.*302|\(status: 200\))", raw_lower):
             return "nuclei"
 
-    if t in ("sublist3r", "amass", "subdominator", "theharvester"):
+    if t in ("subfinder", "amass", "subdominator", "theharvester"):
         # only chain if something hostname-like actually came back
         if _r.search(r"(?:[a-z0-9-]+\.)+[a-z]{2,}", raw_lower):
             return "httpx"

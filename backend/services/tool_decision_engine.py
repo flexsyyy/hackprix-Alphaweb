@@ -116,7 +116,7 @@ TOOL_CHAINS: Dict[str, List[Tuple[Any, str, str]]] = {
         (_has_open_ports, "gobuster", "Open ports found — enumerating directories"),
     ],
     # --- recon: subdomains/OSINT -> probe what's alive ---
-    "sublist3r": [
+    "subfinder": [
         (_has_subdomains, "httpx", "Subdomains found — probing which are live"),
     ],
     "amass": [

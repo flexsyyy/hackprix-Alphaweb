@@ -24,7 +24,15 @@ from services.shannon_orchestrator import (
     precheck_tool_input,
 )
 from services.alert_extractor import extract_alerts, severity_counts
-from services.report_builder import build_report, load_report_html, save_report
+from services.report_builder import (
+    build_report,
+    delete_all_reports,
+    load_all_reports,
+    load_report,
+    load_report_html,
+    save_report,
+)
+from services.pdf_builder import render_reports_pdf
 from services.workflow_engine import WorkflowEngine
 from tool_runner import cancel_run, run_tool, run_tool_streaming
 from validators import (
@@ -720,7 +728,7 @@ TOOL_DEFAULT_ARGS: Dict[str, str] = {
     "hashcat":       "",
     "gitleaks":      "detect",
     "theharvester":  "-b all -l 100 -d",
-    "sublist3r":     "-d",
+    "subfinder":     "-d",
     "testssl":       "",
     "wapiti":        "-u",
     "wpscan":        "--url",
@@ -763,14 +771,18 @@ def _resolve_tools(req: "ChatRequest") -> List[str]:
     """Pick the tools to run, in priority order:
 
       1. Explicit client selection (req.tools) — honoured exactly.
-      2. Gemma (Layer 1) natural-language tool routing — validated against
-         the tool registry, so a hallucinated name can never run.
-      3. Deterministic keyword detection — fallback when Gemma is
-         unavailable or returns nothing confident.
+      2. Explicit-intent keyword/tool-name match — curated, unambiguous, so it
+         takes priority over the model. ("find subdomains" -> subfinder, not
+         whatever a small router guesses.)
+      3. Gemma (Layer 1) natural-language routing — for prompts that express no
+         clear curated intent. Validated against the registry.
+      4. Keyword fallback with nmap default — last resort.
     """
     cap = settings.MAX_TOOLS_PER_SCAN
     if req.tools:
-        valid = [t for t in req.tools if t in SUPPORTED_TOOLS]
+        # Translate legacy/alias names (e.g. "sublist3r" -> "subfinder") first.
+        normalized = [TOOL_ALIASES.get(t, t) for t in req.tools]
+        valid = [t for t in normalized if t in SUPPORTED_TOOLS]
         if valid:
             # de-dupe, preserve order, cap at MAX_TOOLS_PER_SCAN
             seen: set = set()
@@ -783,12 +795,19 @@ def _resolve_tools(req: "ChatRequest") -> List[str]:
                         break
             return out
 
-    # 2. Gemma natural-language routing.
+    # 2. Explicit deterministic intent beats the model. The keyword map is
+    #    curated to be unambiguous, so when it matches we trust it over Gemma —
+    #    this is what stops "find subdomains" being routed to nmap.
+    strict = _detect_tools_strict(req.prompt)
+    if strict:
+        return strict[:cap]
+
+    # 3. Gemma natural-language routing for genuinely ambiguous prompts.
     gemma_tools = _gemma_select_tools(req.prompt, req.domain.strip())
     if gemma_tools:
         return gemma_tools[:cap]
 
-    # 3. Keyword fallback.
+    # 4. Keyword fallback (defaults to nmap when nothing matches).
     return _detect_all_tools(req.prompt)[:cap]
 
 
@@ -1165,6 +1184,92 @@ async def download_report(run_id: str) -> Any:
     )
 
 
+@app.get("/report/{run_id}/pdf")
+async def download_report_pdf(run_id: str) -> Any:
+    """Download a single scan report as a PDF attachment."""
+    from fastapi.responses import Response
+
+    safe_id = re.sub(r"[^A-Za-z0-9_-]", "", run_id)[:64]
+    report = load_report(settings.LOG_DIR, safe_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+    pdf_bytes = await asyncio.to_thread(render_reports_pdf, [report])
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="alphaweb-report-{safe_id}.pdf"',
+        },
+    )
+
+
+@app.get("/reports/pdf")
+async def download_all_reports_pdf(
+    run_ids: Optional[str] = Query(None, description="Comma-separated run ids; defaults to all"),
+) -> Any:
+    """Bundle every scan report (or a given subset) into one combined PDF.
+
+    This is the 'Generate' action: after running tools the client requests
+    this to get a single PDF of all scan reports.
+    """
+    from fastapi.responses import Response
+
+    if run_ids:
+        ids = [re.sub(r"[^A-Za-z0-9_-]", "", x)[:64] for x in run_ids.split(",") if x.strip()]
+        reports = [r for r in (load_report(settings.LOG_DIR, i) for i in ids) if r]
+    else:
+        reports = await asyncio.to_thread(load_all_reports, settings.LOG_DIR)
+
+    if not reports:
+        raise HTTPException(status_code=404, detail="No reports available to generate")
+
+    pdf_bytes = await asyncio.to_thread(render_reports_pdf, reports)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="alphaweb-reports-{stamp}.pdf"',
+        },
+    )
+
+
+# --- Database management ---
+
+class DatabaseResetResponse(BaseModel):
+    reset: bool
+    deleted: Dict[str, int]
+    reports_deleted: int
+
+
+@app.post("/database/reset", response_model=DatabaseResetResponse)
+async def reset_database() -> Any:
+    """Wipe all user scan data, keeping seeded tool definitions intact.
+
+    User-initiated. Clears scan_jobs, execution_logs, workflow_steps,
+    anomalies and every persisted report. tool_definitions are preserved.
+    """
+    deleted: Dict[str, int] = {}
+    db = SessionLocal()
+    try:
+        # Delete children before parents to satisfy FK constraints.
+        deleted["anomalies"] = db.query(Anomaly).delete(synchronize_session=False)
+        deleted["execution_logs"] = db.query(ExecutionLog).delete(synchronize_session=False)
+        deleted["workflow_steps"] = db.query(WorkflowStep).delete(synchronize_session=False)
+        deleted["scan_jobs"] = db.query(ScanJob).delete(synchronize_session=False)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.exception("Database reset failed")
+        raise HTTPException(status_code=500, detail=f"Reset failed: {e}") from e
+    finally:
+        db.close()
+
+    reports_deleted = await asyncio.to_thread(delete_all_reports, settings.LOG_DIR)
+    logger.info(f"Database reset by user — deleted {deleted}, {reports_deleted} report files")
+    return DatabaseResetResponse(reset=True, deleted=deleted, reports_deleted=reports_deleted)
+
+
 # --- Legacy endpoint ---
 
 @app.post("/execute", response_model=ExecuteResponse)
@@ -1213,6 +1318,12 @@ async def execute(req: ExecuteRequest) -> Any:
 
 
 # --- Fallback tool selection (when BaronLLM is not loaded) ---
+
+# Old/alternate tool names that map to the current registry name. Lets a user
+# who types a legacy name (e.g. "sublist3r") still hit the right tool.
+TOOL_ALIASES = {
+    "sublist3r": "subfinder",
+}
 
 KEYWORD_TOOL_MAP = {
     "port": "nmap",
@@ -1263,12 +1374,12 @@ KEYWORD_TOOL_MAP = {
     "harvester": "theharvester",
     "osint": "theharvester",
     "email harvest": "theharvester",
-    "sublist3r": "sublist3r",
-    "subfinder": "sublist3r",
-    "subdomain enum": "sublist3r",
-    "subdomain": "sublist3r",
-    "find subdomains": "sublist3r",
-    "enumerate subdomains": "sublist3r",
+    "subfinder": "subfinder",
+    "sublist3r": "subfinder",
+    "subdomain enum": "subfinder",
+    "subdomain": "subfinder",
+    "find subdomains": "subfinder",
+    "enumerate subdomains": "subfinder",
     "testssl": "testssl",
     "tls": "testssl",
     "ssl": "testssl",
@@ -1304,34 +1415,28 @@ KEYWORD_TOOL_MAP = {
 }
 
 
-def _detect_all_tools(request_text: str) -> List[str]:
-    """Pick tools from a free-text prompt.
+def _detect_tools_strict(request_text: str) -> List[str]:
+    """Deterministic tool detection WITHOUT the nmap default.
 
-    Priority:
-      1. Tools named explicitly in the prompt (e.g. "run nikto") — run
-         exactly those, nothing else.
-      2. Otherwise, capability keywords matched on a word boundary.
-      3. Otherwise, default to a single nmap port scan.
-
-    Matching is word-boundary based so "git" does not match "digital"
-    and a tool name is never inferred from an unrelated substring.
+    Returns the tools the prompt explicitly asks for — by tool name or by a
+    curated capability keyword — or [] when the prompt expresses no clear
+    intent. Word-boundary matching so substrings never select a tool.
     """
     text = request_text.lower()
     cap = settings.MAX_TOOLS_PER_SCAN
 
-    # 1. Explicit tool names — exclusive. If the user names tools, honour
-    #    exactly that set (capped) and ignore capability keywords entirely.
-    named: List[str] = [
-        tool for tool in SUPPORTED_TOOLS
-        if re.search(rf"\b{re.escape(tool)}\b", text)
-    ]
+    # 1. Explicit tool names (and aliases) — exclusive.
+    named: List[str] = []
+    for tool in SUPPORTED_TOOLS:
+        if re.search(rf"\b{re.escape(tool)}\b", text):
+            named.append(tool)
+    for alias, tool in TOOL_ALIASES.items():
+        if tool not in named and re.search(rf"\b{re.escape(alias)}\b", text):
+            named.append(tool)
     if named:
         return named[:cap]
 
-    # 2. Capability keywords — full word-boundary on BOTH sides (optional
-    #    trailing 's' for plurals). Prevents "https" pulling in the "http"
-    #    rule or "ssl" matching inside an unrelated word. Substrings never
-    #    select a tool, so detection stays faithful to the prompt.
+    # 2. Capability keywords — word-boundary on both sides (optional plural 's').
     found: List[str] = []
     seen: set = set()
     for keyword, tool in KEYWORD_TOOL_MAP.items():
@@ -1342,11 +1447,14 @@ def _detect_all_tools(request_text: str) -> List[str]:
             seen.add(tool)
             if len(found) == cap:
                 break
-    if found:
-        return found
+    return found
 
-    # 3. Nothing recognised — default to a port scan.
-    return ["nmap"]
+
+def _detect_all_tools(request_text: str) -> List[str]:
+    """Strict detection, but defaulting to a single nmap port scan when the
+    prompt matches nothing."""
+    found = _detect_tools_strict(request_text)
+    return found if found else ["nmap"]
 
 
 def _select_tool_for_scan(request_text: str, target: str) -> Dict[str, Any]:

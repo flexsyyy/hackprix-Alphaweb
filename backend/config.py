@@ -38,7 +38,19 @@ class Settings:
     BARONLLM_CONFIDENCE_THRESHOLD: float = float(env("BARONLLM_CONFIDENCE_THRESHOLD", "0.7"))
 
     # Database
-    DATABASE_URL: str = env("DATABASE_URL", "sqlite:///alphaweb.db")
+    # PostgreSQL by default. Override DATABASE_URL to point elsewhere (e.g. a
+    # managed instance) or set the discrete POSTGRES_* vars below. The
+    # docker-compose stack provides a matching `db` service on port 5432.
+    POSTGRES_USER: str = env("POSTGRES_USER", "alphaweb")
+    POSTGRES_PASSWORD: str = env("POSTGRES_PASSWORD", "alphaweb")
+    POSTGRES_HOST: str = env("POSTGRES_HOST", "localhost")
+    POSTGRES_PORT: str = env("POSTGRES_PORT", "5432")
+    POSTGRES_DB: str = env("POSTGRES_DB", "alphaweb")
+    DATABASE_URL: str = env(
+        "DATABASE_URL",
+        f"postgresql+psycopg2://{POSTGRES_USER}:{POSTGRES_PASSWORD}"
+        f"@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}",
+    )
 
     # Docker
     DOCKER_SOCKET: str = env("DOCKER_SOCKET", "unix:///var/run/docker.sock")
