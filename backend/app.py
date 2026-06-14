@@ -23,6 +23,8 @@ from services.shannon_orchestrator import (
     _normalize_target,
     precheck_tool_input,
 )
+import services.semantic_router as semantic_router
+from services.target_extractor import validate_target_for_tool
 from services.alert_extractor import extract_alerts, severity_counts
 from services.report_builder import (
     build_report,
@@ -330,6 +332,14 @@ async def lifespan(app: FastAPI):
     # baron.ensure_loaded in interpret_output). Keeps its 6.6GB GPU model out
     # of memory while only routing/tool execution is happening.
     logger.info("BaronLLM deferred — will lazy-load on first summary")
+
+    # Initialize semantic router (BAAI/bge-small-en-v1.5 embeddings).
+    # Non-blocking — if sentence-transformers isn't installed it degrades gracefully.
+    try:
+        from services.tool_specs import TOOL_SPECS
+        await asyncio.to_thread(semantic_router.initialize, TOOL_SPECS)
+    except Exception as e:
+        logger.warning(f"Semantic router init failed: {e}")
 
     # Warm Gemma (Layer 1 — tool routing) so the first scan isn't cold.
     if settings.GEMMA_ENABLED:
@@ -771,20 +781,17 @@ def _resolve_tools(req: "ChatRequest") -> List[str]:
     """Pick the tools to run, in priority order:
 
       1. Explicit client selection (req.tools) — honoured exactly.
-      2. Explicit-intent keyword/tool-name match — curated, unambiguous, so it
-         takes priority over the model. ("find subdomains" -> subfinder, not
-         whatever a small router guesses.)
-      3. Gemma (Layer 1) natural-language routing — for prompts that express no
-         clear curated intent. Validated against the registry.
-      4. Keyword fallback with nmap default — last resort.
+      2. Explicit-intent keyword/tool-name match — unambiguous curated map.
+      3. Semantic routing (BAAI/bge-small-en-v1.5) — embedding similarity
+         with configurable confidence threshold (default 0.75).
+      4. Gemma (Layer 1) natural-language routing — Ollama-based fallback.
+      5. Keyword fallback with nmap default — last resort.
     """
     cap = settings.MAX_TOOLS_PER_SCAN
     if req.tools:
-        # Translate legacy/alias names (e.g. "sublist3r" -> "subfinder") first.
         normalized = [TOOL_ALIASES.get(t, t) for t in req.tools]
         valid = [t for t in normalized if t in SUPPORTED_TOOLS]
         if valid:
-            # de-dupe, preserve order, cap at MAX_TOOLS_PER_SCAN
             seen: set = set()
             out: List[str] = []
             for t in valid:
@@ -795,19 +802,32 @@ def _resolve_tools(req: "ChatRequest") -> List[str]:
                         break
             return out
 
-    # 2. Explicit deterministic intent beats the model. The keyword map is
-    #    curated to be unambiguous, so when it matches we trust it over Gemma —
-    #    this is what stops "find subdomains" being routed to nmap.
+    # 2. Explicit deterministic intent beats both semantic and Gemma.
     strict = _detect_tools_strict(req.prompt)
     if strict:
         return strict[:cap]
 
-    # 3. Gemma natural-language routing for genuinely ambiguous prompts.
+    # 3. Semantic routing — fast, local, no external API.
+    sem_results = semantic_router.select_tools(req.prompt, top_k=cap)
+    if sem_results:
+        top_tool, top_conf = sem_results[0]
+        threshold = settings.SEMANTIC_CONFIDENCE_THRESHOLD
+        if top_conf >= threshold:
+            selected = [t for t, c in sem_results if c >= threshold]
+            logger.info(f"Semantic router selected {selected} (top_conf={top_conf:.3f})")
+            return selected[:cap]
+        else:
+            logger.info(
+                f"Semantic confidence {top_conf:.3f} < {threshold} "
+                "— falling through to Gemma/keyword"
+            )
+
+    # 4. Gemma natural-language routing for genuinely ambiguous prompts.
     gemma_tools = _gemma_select_tools(req.prompt, req.domain.strip())
     if gemma_tools:
         return gemma_tools[:cap]
 
-    # 4. Keyword fallback (defaults to nmap when nothing matches).
+    # 5. Keyword fallback (defaults to nmap when nothing matches).
     return _detect_all_tools(req.prompt)[:cap]
 
 
@@ -988,15 +1008,13 @@ async def chat_stream(req: ChatRequest):
                 cancelled = True
                 break
 
-            # Announce tool start
-            yield f'data: {json.dumps({"type": "tool_start", "tool": tool_name})}\n\n'
-
             raw_output = ""
             exit_code = 0
             duration = 0.0
 
             input_err = precheck_tool_input(tool_name, {})
             if input_err:
+                yield f'data: {json.dumps({"type": "tool_start", "tool": tool_name})}\n\n'
                 tool_errors.append(f"{tool_name}: {input_err}")
                 tools_used.append(tool_name)
                 tool_results.append({
@@ -1008,7 +1026,33 @@ async def chat_stream(req: ChatRequest):
                 yield f'data: {json.dumps({"type": "tool_done", "tool": tool_name, "exit_code": -1})}\n\n'
                 continue
 
-            args, run_target = _resolve_chat_invocation(tool_name, target, req.tool_args)
+            # Validate + normalize target against tool capability registry
+            target_valid, normalized_target, target_err = validate_target_for_tool(target, tool_name)
+            if not target_valid:
+                yield f'data: {json.dumps({"type": "tool_start", "tool": tool_name})}\n\n'
+                tool_errors.append(f"{tool_name}: {target_err}")
+                tools_used.append(tool_name)
+                tool_results.append({
+                    "tool": tool_name, "raw_output": "", "error": target_err,
+                    "exit_code": -1, "duration": 0.0,
+                })
+                combined_raw += f"\n=== {tool_name.upper()} TARGET ERROR ===\n{target_err}\n"
+                yield f'data: {json.dumps({"type": "tool_line", "tool": tool_name, "line": f"[TARGET ERROR] {target_err}"})}\n\n'
+                yield f'data: {json.dumps({"type": "tool_done", "tool": tool_name, "exit_code": -1})}\n\n'
+                continue
+
+            # Use normalized target (e.g. URL → domain when tool needs domain)
+            effective_target = normalized_target if normalized_target != target else target
+
+            # Resolve args before announcing tool_start so we can include them in the event
+            sem_cmd = semantic_router.select_command(tool_name, req.prompt)
+            if sem_cmd and sem_cmd.get("args") and not (req.tool_args and tool_name in req.tool_args):
+                logger.info(f"Semantic command for {tool_name}: '{sem_cmd['label']}' (args={sem_cmd['args']!r})")
+
+            args, run_target = _resolve_chat_invocation(tool_name, effective_target, req.tool_args)
+
+            # Announce tool start WITH resolved args so the frontend can display the full command
+            yield f'data: {json.dumps({"type": "tool_start", "tool": tool_name, "args": args, "target": run_target})}\n\n'
             try:
                 # Run the tool and stream its output line-by-line as it
                 # appears — the consumer sees progress in real time.
@@ -1336,6 +1380,12 @@ KEYWORD_TOOL_MAP = {
     "vulnerability": "nikto",
     "vuln": "nikto",
     "web server": "nikto",
+    "web scan": "nikto",
+    "website scan": "nikto",
+    "web server scan": "nikto",
+    "http scan": "nikto",
+    "site scan": "nikto",
+    "web check": "nikto",
     "nikto": "nikto",
     "sql injection": "sqlmap",
     "sqli": "sqlmap",

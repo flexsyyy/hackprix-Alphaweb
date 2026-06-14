@@ -428,7 +428,7 @@
 
 /* ── Reset DB button (header) ────────────────────────── */
 .ac-reset-btn {
-  margin-left: 10px;
+  margin-left: auto;
   font-family: var(--font-mono);
   font-size: 9px;
   font-weight: 600;
