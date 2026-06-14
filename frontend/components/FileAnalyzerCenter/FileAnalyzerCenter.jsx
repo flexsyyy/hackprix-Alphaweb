@@ -72,7 +72,9 @@ function NavVulnRow({ vuln, focused, onJump }) {
 
 // ── Code viewer (left panel) ──────────────────────────────────────────────────
 function CodePane({ content, vulnLines, focusedLine, scrollRef }) {
-  const lines = content.split('\n')
+  // Split on all line-ending styles (\r\n, \r, \n) so CRLF files don't show
+  // trailing \r characters or produce a line count mismatch with the backend.
+  const lines = content.split(/\r\n|\r|\n/)
   return (
     <div className="fac__code-scroll" ref={scrollRef}>
       <div className="fac__code-inner">
@@ -210,7 +212,7 @@ export default function FileAnalyzerCenter({
           <span className="fac__code-header-file">{activeFile || '—'}</span>
           {content && (
             <span className="fac__code-header-info">
-              {content.split('\n').length} lines
+              {content.split(/\r\n|\r|\n/).length} lines
               {Object.keys(vulnLines).length > 0 && (
                 <> · <span style={{ color: 'var(--gold)' }}>{Object.keys(vulnLines).length} flagged</span></>
               )}

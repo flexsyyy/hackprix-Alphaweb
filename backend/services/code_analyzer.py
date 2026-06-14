@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
 import tempfile
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 SUPPORTED_LANGUAGES = {"python", "javascript", "java", "php", "go"}
 
@@ -547,8 +550,10 @@ def run_eslint(code: str, timeout: int = 30) -> Tuple[List[Dict], Optional[str]]
     if not os.path.isfile(_ESLINT_BIN):
         return [], f"ESLint not found at {_ESLINT_BIN}"
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".js", delete=False, encoding="utf-8") as f:
-        f.write(code)
+    # Binary mode write prevents \n → \r\n translation on Windows, which would
+    # otherwise make ESLint report doubled line numbers for CRLF source files.
+    with tempfile.NamedTemporaryFile(mode="wb", suffix=".js", delete=False) as f:
+        f.write(code.encode("utf-8"))
         tmp = f.name
     try:
         env = os.environ.copy()
@@ -569,12 +574,18 @@ def run_eslint(code: str, timeout: int = 30) -> Tuple[List[Dict], Optional[str]]
     except subprocess.TimeoutExpired:
         return [], "ESLint timed out"
     finally:
-        os.unlink(tmp)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 def run_bandit(code: str, timeout: int = 30) -> Tuple[List[Dict], Optional[str]]:
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as f:
-        f.write(code)
+    # Write in binary mode so Python does not translate \n → \r\n on Windows.
+    # Text-mode round-trips convert \r\n input to \r\r\n on disk, causing Bandit
+    # to report doubled line numbers.
+    with tempfile.NamedTemporaryFile(mode="wb", suffix=".py", delete=False) as f:
+        f.write(code.encode("utf-8"))
         tmp = f.name
     try:
         out, err = _run_subprocess(["bandit", "-f", "json", "-q", tmp], timeout)
@@ -587,7 +598,10 @@ def run_bandit(code: str, timeout: int = 30) -> Tuple[List[Dict], Optional[str]]
     except json.JSONDecodeError as e:
         return [], f"Failed to parse bandit output: {e}"
     finally:
-        os.unlink(tmp)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 def analyze(code: str, language: Optional[str], filename: Optional[str]) -> Dict[str, Any]:
@@ -601,8 +615,15 @@ def analyze(code: str, language: Optional[str], filename: Optional[str]) -> Dict
             f"Unsupported language: {lang}. Supported: {', '.join(sorted(SUPPORTED_LANGUAGES))}"
         )
 
+    # Count source lines using splitlines() which handles \r\n / \r / \n uniformly.
+    # This is the canonical line count — all tool outputs must map into [1, file_lines].
+    file_lines = len(code.splitlines()) or 1
+    logger.info("[SAST] file=%r lang=%s file_lines=%d code_bytes=%d",
+                filename, lang, file_lines, len(code.encode("utf-8", errors="replace")))
+
     if lang == "python":
         vulns, error = run_bandit(code)
+        logger.debug("[SAST] bandit raw findings: %d", len(vulns))
         pattern_vulns = run_pattern_analysis(code, lang)
         seen = {(v["type"], v["line"]) for v in vulns}
         vulns += [v for v in pattern_vulns if (v["type"], v["line"]) not in seen]
@@ -610,6 +631,7 @@ def analyze(code: str, language: Optional[str], filename: Optional[str]) -> Dict
 
     elif lang == "javascript":
         vulns, eslint_err = run_eslint(code)
+        logger.debug("[SAST] eslint raw findings: %d  err=%s", len(vulns), eslint_err)
         if eslint_err:
             vulns = run_pattern_analysis(code, lang)
         else:
@@ -637,20 +659,37 @@ def analyze(code: str, language: Optional[str], filename: Optional[str]) -> Dict
         vulns = run_pattern_analysis(code, lang)
         error = None
 
-    counts: Dict[str, int] = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    # Bounds-check: drop or log any finding whose line exceeds the actual file.
+    # This catches any future tool mis-count before bad data reaches the frontend.
+    clean_vulns: List[Dict] = []
     for v in vulns:
+        ln = v.get("line")
+        if ln is not None and ln > file_lines:
+            logger.warning(
+                "[SAST] line number out of range — dropping finding: "
+                "type=%s line=%d file_lines=%d file=%r",
+                v.get("type"), ln, file_lines, filename,
+            )
+            continue
+        clean_vulns.append(v)
+
+    counts: Dict[str, int] = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    for v in clean_vulns:
         sev = v.get("severity", "low").lower()
         if sev in counts:
             counts[sev] += 1
 
+    logger.info("[SAST] final findings: %d (dropped %d out-of-range)",
+                len(clean_vulns), len(vulns) - len(clean_vulns))
+
     return {
         "analysis_id": str(uuid.uuid4()),
         "language": lang,
-        "total_vulnerabilities": len(vulns),
+        "total_vulnerabilities": len(clean_vulns),
         "critical": counts["critical"],
         "high": counts["high"],
         "medium": counts["medium"],
         "low": counts["low"],
-        "vulnerabilities": vulns,
+        "vulnerabilities": clean_vulns,
         "tool_error": error,
     }
