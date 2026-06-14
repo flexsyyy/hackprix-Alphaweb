@@ -260,9 +260,6 @@ export default function Terminal({ clearKey = 0, logs = [], alerts = [], maximiz
             <span className="term-count">{tools.length} tool{tools.length > 1 ? 's' : ''}</span>
           )}
           <button className="term-ctrl" title="Clear console" onClick={onClear}>⊘</button>
-          <button className="term-ctrl" title={maximized ? 'Restore' : 'Maximise'} onClick={onMaximize}>
-            {maximized ? '⤡' : '⤢'}
-          </button>
           <button className="term-ctrl term-ctrl--close" title="Close terminal" onClick={onClose}>✕</button>
         </div>
       </div>

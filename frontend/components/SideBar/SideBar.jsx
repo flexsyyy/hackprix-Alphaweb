@@ -81,10 +81,10 @@ const TOOL_COMMANDS = {
     { id: 'google',   label: 'Google only',      args: '-b google -d',  desc: 'Google source only' },
     { id: 'extended', label: 'Extended (500)',   args: '-b all -l 500 -d', desc: 'Extended result limit' },
   ],
-  sublist3r: [
+  subfinder: [
     { id: 'basic',    label: 'Enumerate',        args: '-d',            desc: 'Passive subdomain enum' },
-    { id: 'verbose',  label: 'Verbose',          args: '-v -d',         desc: 'Verbose mode' },
-    { id: 'engines',  label: 'Multi-engine',     args: '-e google,yahoo,bing -d', desc: 'Specific search engines' },
+    { id: 'all',      label: 'All sources',      args: '-all -d',       desc: 'Use all sources (slower)' },
+    { id: 'recursive',label: 'Recursive',        args: '-recursive -d', desc: 'Recursive subdomain enum' },
   ],
   testssl: [
     { id: 'full',     label: 'Full scan',        args: '',              desc: 'Complete TLS audit' },
@@ -212,6 +212,7 @@ export default function SideBar({
     e.target.value = ''
   }
 
+  const isFileAnalyzer = activeView === 'fileAnalyzer'
   const toolCmds = activeTool ? (TOOL_COMMANDS[activeTool] || []) : []
   const selectedCmdId = toolCommandOverrides?.[activeTool] ?? toolCmds[0]?.id ?? null
 
@@ -219,7 +220,7 @@ export default function SideBar({
     <aside className="sidebar">
       {/* ── Header ── */}
       <div className="sidebar__header">
-        <span className="sidebar__title">ALPHAWEB_WORKSPACE</span>
+        <span className="sidebar__title">{isFileAnalyzer ? 'FILE ANALYZER' : 'ALPHAWEB_WORKSPACE'}</span>
         <div className="sidebar__hdr-actions">
           <button
             className="sidebar__hdr-btn"
@@ -235,12 +236,12 @@ export default function SideBar({
         </div>
       </div>
 
-      <div className="sidebar__section-label">
-        {SECTION_LABELS[activeView] ?? 'EXPLORER'}
-      </div>
+      {isFileAnalyzer && (
+        <div className="sidebar__section-label">DROP FILES FOR SAST SCAN</div>
+      )}
 
-      {/* ── Tool Command Panel ── */}
-      {activeTool && toolCmds.length > 0 && (
+      {/* ── Tool Command Panel — only in Tool Diagnosis workspace ── */}
+      {!isFileAnalyzer && activeTool && toolCmds.length > 0 && (
         <div className="sb-tool-cmds">
           <div className="sb-tool-cmds__header">
             <span className="sb-tool-cmds__tool">{activeTool.toUpperCase()}</span>
@@ -331,8 +332,8 @@ export default function SideBar({
         ))}
       </div>
 
-      {/* ── Quick Actions ── */}
-      <div className="sidebar__qa">
+      {/* ── Quick Actions — hidden in File Analyzer mode ── */}
+      {!isFileAnalyzer && <div className="sidebar__qa">
         <div className="sidebar__qa-label">QUICK ACTIONS</div>
 
         <button
@@ -374,7 +375,7 @@ export default function SideBar({
           </div>
           <span className="qa-row__badge qa-row__badge--active">↑ Upload</span>
         </button>
-      </div>
+      </div>}
 
       <input
         ref={fileInputRef}

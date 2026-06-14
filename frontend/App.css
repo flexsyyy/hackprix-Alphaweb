@@ -1,23 +1,57 @@
+/* ── Base app shell ──────────────────────────────────────────────────────── */
 .app {
   display: grid;
-  grid-template-columns: 48px 260px 1fr 380px;
-  grid-template-rows: 1fr var(--term-h, 220px) 26px;
-  grid-template-areas:
-    "activity sidebar editor chat"
-    "activity sidebar terminal chat"
-    "status   status  status  status";
   height: 100vh;
   width: 100vw;
   overflow: hidden;
   background: var(--bg-primary);
 }
 
-/* Terminal states */
-.app--term-max    { --term-h: 60vh; }
-.app--term-hidden { --term-h: 0px; }
-.app--term-hidden .terminal { overflow: hidden; border-top: none; }
+/* ── Tool Diagnosis workspace ─────────────────────────────────────────────
+   [activity 48px] [exec-panel 22%] [console fill] [agent-chat 22%]
+   Full vertical height for the console — no horizontal terminal split.
+*/
+.app--toolDiagnosis {
+  grid-template-columns: 48px minmax(180px, 22%) 1fr minmax(300px, 22%);
+  grid-template-rows: 1fr 26px;
+  grid-template-areas:
+    "activity exec-panel console  chat"
+    "status   status     status   status";
+}
 
-/* Toast notification */
+/* When terminal is maximized in tool diagnosis mode */
+.app--toolDiagnosis.app--term-max {
+  grid-template-rows: 1fr 26px;
+}
+
+/* ── File Analyzer workspace ──────────────────────────────────────────────
+   [activity 48px] [file-panel 280px] [sast-results fill]
+*/
+.app--fileAnalyzer {
+  grid-template-columns: 48px 270px 1fr;
+  grid-template-rows: 1fr 26px;
+  grid-template-areas:
+    "activity sidebar sast-results"
+    "status   status  status";
+}
+
+/* Override terminal position in tool diagnosis — it fills the console area */
+.app--toolDiagnosis .terminal {
+  grid-area: console;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-height: 100%;
+  border-top: none;
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+
+.app--toolDiagnosis.app--term-hidden .terminal {
+  display: none;
+}
+
+/* ── Toast notification ───────────────────────────────────────────────────── */
 .toast {
   position: fixed;
   bottom: 42px;

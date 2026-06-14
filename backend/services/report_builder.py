@@ -55,6 +55,45 @@ def load_report_html(log_dir: str, run_id: str) -> Optional[str]:
     return render_report_html(data) if data else None
 
 
+def list_report_ids(log_dir: str) -> List[str]:
+    """Return run_ids of every persisted report, newest first."""
+    rdir = _reports_dir(log_dir)
+    try:
+        files = [f for f in os.listdir(rdir) if f.endswith(".json")]
+    except OSError:
+        return []
+    files.sort(key=lambda f: os.path.getmtime(os.path.join(rdir, f)), reverse=True)
+    return [os.path.splitext(f)[0] for f in files]
+
+
+def load_all_reports(log_dir: str) -> List[Dict[str, Any]]:
+    """Load every persisted report JSON, newest first. Skips unreadable ones."""
+    out: List[Dict[str, Any]] = []
+    for run_id in list_report_ids(log_dir):
+        data = load_report(log_dir, run_id)
+        if data:
+            out.append(data)
+    return out
+
+
+def delete_all_reports(log_dir: str) -> int:
+    """Delete every persisted report (.json + .html). Returns files removed."""
+    rdir = _reports_dir(log_dir)
+    removed = 0
+    try:
+        names = os.listdir(rdir)
+    except OSError:
+        return 0
+    for name in names:
+        if name.endswith((".json", ".html")):
+            try:
+                os.remove(os.path.join(rdir, name))
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
 def build_report(
     *,
     run_id: str,

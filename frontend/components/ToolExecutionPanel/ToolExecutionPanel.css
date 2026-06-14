@@ -1,0 +1,404 @@
+.tep {
+  grid-area: exec-panel;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+  user-select: none;
+}
+
+/* ── Header ──────────────────────────────────────────── */
+.tep__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  height: 35px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.tep__title {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--text-dim);
+}
+
+.tep__stats {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.tep__stat {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 3px;
+  letter-spacing: 0.06em;
+}
+
+.tep__stat--run   { color: var(--cyan);  background: rgba(0,229,255,0.1);  border: 1px solid rgba(0,229,255,0.25); }
+.tep__stat--queue { color: var(--gold);  background: rgba(255,215,0,0.08); border: 1px solid rgba(255,215,0,0.2);  }
+.tep__stat--done  { color: var(--green); background: rgba(0,255,136,0.07); border: 1px solid rgba(0,255,136,0.2);  }
+
+/* ── Body ─────────────────────────────────────────────── */
+.tep__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.tep__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  padding: 32px 16px;
+  text-align: center;
+}
+
+.tep__empty-icon {
+  font-size: 28px;
+  color: var(--text-dim);
+  opacity: 0.4;
+  margin-bottom: 10px;
+  animation: tep-spin 2.5s linear infinite;
+}
+
+@keyframes tep-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.tep__empty-title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0 0 4px;
+}
+
+.tep__empty-sub {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-dim);
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* ── Section ──────────────────────────────────────────── */
+.tep__section {
+  margin-bottom: 4px;
+}
+
+.tep__section-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--text-dim);
+  padding: 6px 12px 3px;
+  text-transform: uppercase;
+}
+
+/* ── Tool Card ────────────────────────────────────────── */
+.tep-card {
+  margin: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+
+.tep-card--running { border-color: rgba(0,229,255,0.35); }
+.tep-card--done    { border-color: rgba(0,255,136,0.2);  }
+.tep-card--error   { border-color: rgba(224,108,117,0.35); }
+.tep-card--queued  { border-color: var(--border); opacity: 0.65; }
+
+.tep-card__header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px 5px;
+}
+
+.tep-card__tool {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.08em;
+  flex: 1;
+}
+
+.tep-card__badge {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+  letter-spacing: 0.08em;
+}
+
+.tep-card__badge--running { color: var(--cyan);  background: rgba(0,229,255,0.12); }
+.tep-card__badge--done    { color: var(--green); background: rgba(0,255,136,0.1);  }
+.tep-card__badge--error   { color: var(--red);   background: rgba(224,108,117,0.1);}
+.tep-card__badge--queued  { color: var(--text-dim); background: var(--bg-hover);   }
+
+.tep-card__elapsed {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+/* Command line */
+.tep-card__cmd {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px 4px;
+  background: rgba(0,0,0,0.15);
+  border-top: 1px solid var(--border);
+}
+
+.tep-card__cmd-prefix {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--cyan);
+  flex-shrink: 0;
+}
+
+.tep-card__cmd-text {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Mini log */
+.tep-card__logs {
+  padding: 4px 0;
+  border-top: 1px solid var(--border);
+  max-height: 100px;
+  overflow-y: auto;
+}
+
+.tep-log {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  padding: 1.5px 10px;
+}
+
+.tep-log__icon {
+  font-size: 9px;
+  flex-shrink: 0;
+  margin-top: 1px;
+  width: 10px;
+}
+
+.tep-log__text {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.4;
+}
+
+.tep-log--ok    { color: var(--green); }
+.tep-log--warn  { color: var(--gold);  }
+.tep-log--error { color: var(--red);   }
+.tep-log--info  { color: var(--text-secondary); }
+
+/* Exit badge */
+.tep-card__exit {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  padding: 2px 10px 5px;
+  letter-spacing: 0.06em;
+}
+
+.tep-card__exit--ok  { color: var(--green); }
+.tep-card__exit--err { color: var(--red);   }
+
+/* ── Status Dot ───────────────────────────────────────── */
+.tep-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.tep-dot--running {
+  background: var(--cyan);
+  box-shadow: 0 0 5px var(--cyan);
+  animation: tep-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes tep-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
+}
+
+.tep-dot--done   { background: var(--green); }
+.tep-dot--error  { background: var(--red);   }
+.tep-dot--queued { background: var(--border-bright); }
+
+/* ── Queue row ─────────────────────────────────────────── */
+.tep-queue-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 6px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tep-queue-row__tool {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  flex: 1;
+  letter-spacing: 0.06em;
+}
+
+.tep-queue-row__pos {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-dim);
+}
+
+/* ── Commands Panel ────────────────────────────────────── */
+.tep-cmds {
+  margin: 6px 0 0;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.tep-cmds__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px 4px;
+}
+
+.tep-cmds__tool {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--cyan);
+  letter-spacing: 0.1em;
+}
+
+.tep-cmds__label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+}
+
+.tep-cmds__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.tep-cmd {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px 5px 10px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  transition: background 0.1s;
+}
+
+.tep-cmd:hover:not(.tep-cmd--disabled) {
+  background: var(--bg-hover);
+}
+
+.tep-cmd:hover:not(.tep-cmd--disabled) .tep-cmd__run {
+  opacity: 1;
+  color: var(--cyan);
+}
+
+.tep-cmd--active {
+  background: rgba(0,229,255,0.06);
+  border-left: 2px solid var(--cyan);
+  padding-left: 8px;
+}
+
+.tep-cmd--disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.tep-cmd__dot {
+  font-size: 8px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+  width: 10px;
+}
+
+.tep-cmd--active .tep-cmd__dot {
+  color: var(--cyan);
+}
+
+.tep-cmd__label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  min-width: 80px;
+  flex-shrink: 0;
+}
+
+.tep-cmd--active .tep-cmd__label {
+  color: var(--text-primary);
+}
+
+.tep-cmd__desc {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-dim);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tep-cmd__run {
+  font-size: 8px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+.tep-cmds__nodomain {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-dim);
+  padding: 6px 12px 8px;
+  font-style: italic;
+}

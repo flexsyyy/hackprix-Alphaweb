@@ -27,15 +27,23 @@ export default function AgentChat({
   onScanOutput,
   onProgress,
   onAlerts,
-  onToolStart,        // (toolName: string) => void — fires when a tool starts
+  onToolStart,          // (toolName: string) => void — fires when a tool starts
   toolCommandOverrides, // {[tool]: args} — per-tool arg overrides from SideBar
+  onExecutionEvent,     // (evt) => void — structured events for ToolExecutionPanel
+  onDomainChange,       // (domain: string) => void — notify App of domain changes
+  queuedScan,           // {id, prompt, tools, toolArgs} | null — externally triggered scan
 }) {
   const [messages,    setMessages]    = useState([])
   const [input,       setInput]       = useState('')
-  const [domain,      setDomain]      = useState('')
+  const [domain,      setDomainState] = useState('')
   const [domainError, setDomainError] = useState('')
   const [loading,     setLoading]     = useState(false)
   const [modelStatus, setModelStatus] = useState('Idle')
+
+  function setDomain(val) {
+    setDomainState(val)
+    onDomainChange?.(val)
+  }
 
   // Tool selection
   const [toolList,      setToolList]      = useState([])
@@ -44,6 +52,7 @@ export default function AgentChat({
 
   // Report produced by the last completed run
   const [report, setReport] = useState(null)
+  const [resetting, setResetting] = useState(false)
 
   const endRef   = useRef(null)
   const inputRef = useRef(null)
@@ -53,6 +62,14 @@ export default function AgentChat({
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
+
+  // Auto-run when parent queues a scan (e.g. command clicked in ToolExecutionPanel)
+  useEffect(() => {
+    if (!queuedScan || loading) return
+    const d = domain.trim()
+    if (!d) return
+    runScan(queuedScan.prompt, queuedScan.tools || [])
+  }, [queuedScan?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch the available tool catalogue once
   useEffect(() => {
@@ -110,6 +127,32 @@ export default function AgentChat({
     const text = input.trim()
     if (!text || loading) return
     runScan(text, [...selectedTools])
+  }
+
+  // Download a single combined PDF of every scan report on the server.
+  function generatePdf() {
+    window.open('/api/reports/pdf', '_blank', 'noopener')
+  }
+
+  // User-initiated DB reset. Wipes scan data + reports, keeps tool defs.
+  async function resetDatabase() {
+    if (resetting) return
+    if (!window.confirm('Reset the database? This permanently deletes all scans, logs and saved reports. Tool definitions are kept.')) return
+    setResetting(true)
+    try {
+      const res = await fetch('/api/database/reset', { method: 'POST' })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      const n = Object.values(data.deleted || {}).reduce((a, b) => a + b, 0)
+      setReport(null)
+      setMessages([])
+      onAlerts?.([])
+      onScanOutput?.([{ type: 'success', icon: '✓', msg: `Database reset — ${n} record(s) + ${data.reports_deleted} report(s) cleared.`, ts: ts() }])
+    } catch (e) {
+      onScanOutput?.([{ type: 'error', icon: '✗', msg: `Reset failed: ${e.message}`, ts: ts() }])
+    } finally {
+      setResetting(false)
+    }
   }
 
   async function runScan(text, tools) {
@@ -190,16 +233,21 @@ export default function AgentChat({
               type: 'info', icon: '▶',
               msg: `Run started — tools: ${list || 'auto'}`, ts: ts(),
             }])
+            onExecutionEvent?.({ type: 'run_start', tools: evt.tools || [] })
           }
 
           if (evt.type === 'tool_start') {
             setModelStatus(`Running ${evt.tool}…`)
             onToolStart?.(evt.tool)
-            onScanOutput?.([{ type: 'cmd', icon: '$', tool: evt.tool, msg: `${evt.tool} ${domain.trim()}`, ts: ts() }])
+            const cmdParts = [evt.tool, evt.args, evt.target || domain.trim()].filter(Boolean)
+            const cmdStr = cmdParts.join(' ').replace(/  +/g, ' ')
+            onScanOutput?.([{ type: 'cmd', icon: '$', tool: evt.tool, msg: cmdStr, ts: ts() }])
+            onExecutionEvent?.({ type: 'tool_start', tool: evt.tool, command: cmdStr, args: evt.args || null })
           }
 
           if (evt.type === 'tool_line') {
             onScanOutput?.([classifyLine(evt.line, evt.tool)])
+            onExecutionEvent?.({ type: 'tool_line', tool: evt.tool, line: evt.line })
           }
 
           if (evt.type === 'tool_done') {
@@ -211,6 +259,7 @@ export default function AgentChat({
               tool: evt.tool,
               msg: `${evt.tool} finished (exit ${evt.exit_code})`, ts: ts(),
             }])
+            onExecutionEvent?.({ type: 'tool_done', tool: evt.tool, exit_code: evt.exit_code })
           }
 
           if (evt.type === 'error') {
@@ -246,9 +295,13 @@ export default function AgentChat({
 
           if (evt.type === 'cancelled') {
             onScanOutput?.([{ type: 'warning', icon: '!', msg: 'Run cancelled.', ts: ts() }])
+            onExecutionEvent?.({ type: 'cancelled' })
           }
 
-          if (evt.type === 'done') break
+          if (evt.type === 'done') {
+            onExecutionEvent?.({ type: 'done' })
+            break
+          }
         }
       }
     } catch (e) {
@@ -276,11 +329,20 @@ export default function AgentChat({
       <div className="ac-header">
         <div className="ac-header-row">
           <span className="ac-title-text">AlphaWeb Agent</span>
-          <div className="ac-model-row">
-            <span className="ac-model-dot" />
-            <span className="ac-model-name">ALPHA-LLM</span>
-            <span className="ac-model-status">{modelStatus}</span>
-          </div>
+          <button
+            className="ac-reset-btn"
+            onClick={resetDatabase}
+            disabled={resetting || loading}
+            title="Wipe all scans & reports (keeps tool definitions)"
+            type="button"
+          >
+            {resetting ? '⟳ Resetting…' : '⟲ Reset DB'}
+          </button>
+        </div>
+        <div className="ac-model-row">
+          <span className="ac-model-dot" />
+          <span className="ac-model-name">ALPHA-LLM</span>
+          <span className="ac-model-status">{modelStatus}</span>
         </div>
         <p className="ac-subtitle">AI-POWERED CYBERSECURITY AUTOMATION PLATFORM</p>
       </div>
@@ -358,11 +420,19 @@ export default function AgentChat({
             Open Report
           </button>
           <a
-            className="ac-report__btn ac-report__btn--dl"
-            href={`/api/report/${report.runId}/download`}
+            className="ac-report__btn"
+            href={`/api/report/${report.runId}/pdf`}
           >
-            Download
+            PDF (this run)
           </a>
+          <button
+            className="ac-report__btn"
+            onClick={generatePdf}
+            type="button"
+            title="Generate one combined PDF of all scan reports"
+          >
+            ⬇ Generate PDF (all)
+          </button>
         </div>
       )}
 

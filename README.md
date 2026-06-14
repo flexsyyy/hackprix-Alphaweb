@@ -45,8 +45,10 @@ alphaweb/
 │   │   └── js/            # ESLint + security plugins
 │   ├── models/            # BaronLLM .gguf file location
 │   ├── data/              # Wordlists, temp files
-│   ├── logs/              # Execution logs
-│   ├── alphaweb.db        # SQLite database
+│   ├── logs/              # Execution logs + saved reports (json/html)
+│   ├── services/pdf_builder.py   # reportlab PDF report generator
+│   ├── docker-compose.yml         # Full stack: Postgres + orchestrator
+│   ├── docker-compose.postgres.yml # Postgres only (local dev)
 │   ├── requirements.txt    # Python dependencies
 │   └── Dockerfile         # Container image
 │
@@ -78,9 +80,14 @@ alphaweb/
 - Chat interface for security queries
 
 ### 4. Database Persistence
-- SQLite with SQLAlchemy ORM
-- Tables: `ScanJob`, `ExecutionLog`, `Anomaly`, `WorkflowStep`
+- PostgreSQL with SQLAlchemy ORM (default port 5432)
+- Tables: `ScanJob`, `ExecutionLog`, `Anomaly`, `WorkflowStep`, `ToolDefinition`
 - Audit trail of all scans and workflow executions
+- **User-initiated reset**: `POST /database/reset` wipes scan data + saved reports, keeps tool definitions (Reset DB button in AgentChat header)
+
+### 4b. PDF Reports
+- Per-run report persisted as JSON + HTML under `logs/reports/`
+- **Generate PDF**: combined PDF of every scan report via `GET /reports/pdf`, single run via `GET /report/{id}/pdf` (reportlab, no system deps)
 
 ### 5. UI Components
 - **Activity Bar**: Project views (Scanner, Reporting, Orchestration)
@@ -116,6 +123,8 @@ pip install -r requirements.txt
 - `uvicorn[standard]` — ASGI server
 - `pydantic` — Data validation
 - `sqlalchemy` — ORM
+- `psycopg2-binary` — PostgreSQL driver
+- `reportlab` — PDF report generation
 - `llama-cpp-python` — AlphaLLM inference (local GGUF model via llama-server.exe)
 - `bandit` — Python security linter
 - `semgrep` — SAST scanner (Windows encoding issues; pattern fallback used)
@@ -134,8 +143,14 @@ BARONLLM_N_GPU_LAYERS=35
 BARONLLM_TEMPERATURE=0.1
 BARONLLM_CONFIDENCE_THRESHOLD=0.7
 
-# Database
-DATABASE_URL=sqlite:///alphaweb.db
+# Database (PostgreSQL — default port 5432)
+# Either set DATABASE_URL directly, or the discrete POSTGRES_* vars below.
+DATABASE_URL=postgresql+psycopg2://alphaweb:alphaweb@localhost:5432/alphaweb
+POSTGRES_USER=alphaweb
+POSTGRES_PASSWORD=alphaweb
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=alphaweb
 
 # Docker
 DOCKER_SOCKET=unix:///var/run/docker.sock
@@ -151,9 +166,20 @@ LOG_LEVEL=INFO
 LOG_DIR=./logs
 ```
 
-#### 3. Initialize Database
+#### 3. Start PostgreSQL + Initialize Database
+PostgreSQL must be running before the backend boots (`init_db` creates tables and
+seeds tool definitions on first connect).
 ```bash
 cd backend
+# Spin up Postgres only (local dev — backend runs on host)
+docker compose -f docker-compose.postgres.yml up -d
+
+# If host port 5432 is already taken (e.g. a locally-installed Postgres),
+# map the container to a free host port and point the backend at it:
+#   POSTGRES_HOST_PORT=5544 docker compose -f docker-compose.postgres.yml up -d
+#   POSTGRES_PORT=5544 python -m uvicorn app:app --port 8000
+
+# Tables auto-create on backend startup. To init manually:
 python -c "from database import init_db; init_db()"
 ```
 
@@ -302,8 +328,13 @@ TOOL_TIMEOUTS = {
 ### Terminal 1: Backend
 ```bash
 cd backend
+# Postgres must be up first (default localhost:5432)
+docker compose -f docker-compose.postgres.yml up -d
 python -m uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 ```
+
+> Or run the whole backend stack (Postgres + orchestrator) in containers:
+> `cd backend && docker compose up`
 
 ### Terminal 2: Frontend
 ```bash
@@ -396,6 +427,26 @@ Response: {
     "docker": true
   }
 }
+```
+
+### Reports (PDF / HTML)
+```bash
+GET /report/{run_id}            # view rendered HTML report
+GET /report/{run_id}/download   # download HTML
+GET /report/{run_id}/pdf        # download single-run PDF
+GET /reports/pdf                # combined PDF of ALL scan reports
+GET /reports/pdf?run_ids=a,b,c  # combined PDF of a subset
+```
+
+### Database Reset (user-initiated)
+```bash
+POST /database/reset
+Response: {
+  "reset": true,
+  "deleted": { "scan_jobs": 12, "execution_logs": 40, "workflow_steps": 18, "anomalies": 5 },
+  "reports_deleted": 12
+}
+# Wipes scan data + saved reports. Keeps seeded tool_definitions.
 ```
 
 ---
@@ -557,11 +608,22 @@ cd backend && docker-compose -f docker-compose.tools.yml build
 docker run --rm <tool-image> --help
 ```
 
-### Database Locked
+### Database Reset / Wipe
 ```bash
-# Remove old DB and recreate
-rm backend/alphaweb.db
-cd backend && python -c "from database import init_db; init_db()"
+# Wipe scan data + reports via the API (keeps tool definitions)
+curl -X POST http://localhost:8000/database/reset
+
+# Or nuke the Postgres volume for a total clean slate, then restart
+cd backend
+docker compose -f docker-compose.postgres.yml down -v
+docker compose -f docker-compose.postgres.yml up -d
+```
+
+### Cannot connect to database
+```bash
+# Confirm Postgres is up and listening on 5432
+cd backend && docker compose -f docker-compose.postgres.yml ps
+# Check DATABASE_URL matches POSTGRES_* creds (default alphaweb/alphaweb)
 ```
 
 ---
@@ -573,7 +635,9 @@ cd backend && python -c "from database import init_db; init_db()"
 | `ORCHESTRATOR_HOST` | 0.0.0.0 | FastAPI bind address |
 | `ORCHESTRATOR_PORT` | 8000 | FastAPI port |
 | `BARONLLM_MODEL_PATH` | models/barronllm.gguf | AlphaLLM GGUF model file |
-| `DATABASE_URL` | sqlite:///alphaweb.db | SQLAlchemy connection string |
+| `DATABASE_URL` | postgresql+psycopg2://alphaweb:alphaweb@localhost:5432/alphaweb | SQLAlchemy connection string |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` | alphaweb / alphaweb | DB credentials (used to build DATABASE_URL) |
+| `POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_DB` | localhost / 5432 / alphaweb | DB host, port, name |
 | `DOCKER_SOCKET` | unix:///var/run/docker.sock | Docker daemon socket |
 | `DOCKER_MEMORY_LIMIT` | 512m | Container memory limit |
 | `DOCKER_CPU_LIMIT` | 1.0 | Container CPU limit |
@@ -595,9 +659,9 @@ cd backend && python -c "from database import init_db; init_db()"
 - No tool output retries (timeout = failed)
 
 ### Database Optimization
-- SQLite suitable for <100k scans
-- For production: migrate to PostgreSQL
-- Add indexes on `scan_id`, `status` columns
+- PostgreSQL — handles concurrent scans without write-lock contention
+- Add indexes on `scan_id`, `status` columns for large datasets
+- Connection pooling via SQLAlchemy engine (default pool)
 
 ---
 
@@ -632,6 +696,8 @@ cd backend && python -c "from database import init_db; init_db()"
 ### Backend
 - **FastAPI** — Web framework (async)
 - **SQLAlchemy** — ORM
+- **PostgreSQL** + **psycopg2** — Persistent storage
+- **reportlab** — PDF report generation
 - **Uvicorn** — ASGI server
 - **Pydantic** — Data validation
 - **llama-cpp-python** + **llama-server.exe** — Local AlphaLLM inference
@@ -643,8 +709,8 @@ cd backend && python -c "from database import init_db; init_db()"
 - **Docker** — Tool isolation
 
 ### Database
-- **SQLite** — Dev/test (portable)
-- **PostgreSQL** — Production (recommended)
+- **PostgreSQL 16** — primary store (Docker, default port 5432)
+- **SQLAlchemy** — ORM / engine abstraction
 
 ---
 
@@ -663,6 +729,7 @@ Last Updated: 2026-04-26
 cd backend
 pip install -r requirements.txt
 pip install bandit
+docker compose -f docker-compose.postgres.yml up -d   # Postgres on :5432
 python -m uvicorn app:app --host 0.0.0.0 --port 8000
 
 # Frontend (new terminal)

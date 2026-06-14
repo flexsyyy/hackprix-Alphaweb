@@ -233,7 +233,7 @@ def _tool_timeout_seconds(tool_name: str, settings: Settings) -> int:
         "hashcat": 3600,
         "gitleaks": 300,
         "theharvester": 300,
-        "sublist3r": 300,
+        "subfinder": 300,
         "testssl": 300,
         "wapiti": 900,
         "wpscan": 600,

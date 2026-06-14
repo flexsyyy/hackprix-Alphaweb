@@ -1,0 +1,26 @@
+# Local-dev Postgres only. Run the backend on the host (python app.py) and
+# point it at this DB. Defaults match config.py, so no env needed:
+#   docker compose -f docker-compose.postgres.yml up -d
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-alphaweb}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-alphaweb}
+      - POSTGRES_DB=${POSTGRES_DB:-alphaweb}
+    ports:
+      # Host port configurable to avoid clashes with a local Postgres already
+      # on 5432. Set POSTGRES_HOST_PORT and point the backend's POSTGRES_PORT
+      # at the same value. Container always listens on 5432 internally.
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-alphaweb} -d ${POSTGRES_DB:-alphaweb}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pg_data:
